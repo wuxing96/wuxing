@@ -739,6 +739,7 @@ public struct CodexSessionStore: Sendable {
 
     public func loadSessions(now: Date = Date()) -> [AIAgentSession] {
         let runningProcessCommands = RunningProcessCommands.snapshot()
+        let activeSessionCountsByCWD = RunningCodexProcesses.activeSessionCounts()
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey],
@@ -758,7 +759,33 @@ public struct CodexSessionStore: Sendable {
             }
             sessions.append(session)
         }
+        guard let activeSessionCountsByCWD else {
+            return sessions
+        }
+        return Self.filterLiveSessions(sessions, activeSessionCountsByCWD: activeSessionCountsByCWD)
+    }
+
+    public static func filterLiveSessions(
+        _ sessions: [AIAgentSession],
+        activeSessionCountsByCWD: [String: Int]
+    ) -> [AIAgentSession] {
+        let normalizedActiveCounts = activeSessionCountsByCWD.reduce(into: [String: Int]()) { result, item in
+            result[RunningCodexProcesses.normalizedPath(item.key), default: 0] += item.value
+        }
+        var keptCountsByCWD: [String: Int] = [:]
+
         return sessions
+            .sorted { $0.lastActivity > $1.lastActivity }
+            .filter { session in
+                let cwd = RunningCodexProcesses.normalizedPath(session.cwd)
+                let allowedCount = normalizedActiveCounts[cwd, default: 0]
+                let keptCount = keptCountsByCWD[cwd, default: 0]
+                guard keptCount < allowedCount else {
+                    return false
+                }
+                keptCountsByCWD[cwd] = keptCount + 1
+                return true
+            }
     }
 
     public func loadTokenUsage(now: Date = Date(), calendar: Calendar = .current) -> TokenUsageSummary {
@@ -787,6 +814,102 @@ public struct CodexSessionStore: Sendable {
         }
 
         return CodexTokenUsageParser.parse(lines: lines, now: now, calendar: calendar)
+    }
+}
+
+public enum RunningCodexProcesses {
+    public static func activeSessionCounts() -> [String: Int]? {
+        guard let psOutput = runProcess(executable: "/bin/ps", arguments: ["-axo", "pid,command"]) else {
+            return nil
+        }
+
+        let pids = nativeCodexPIDs(from: psOutput)
+        if pids.isEmpty {
+            return [:]
+        }
+
+        let pidArgument = pids.sorted().map(String.init).joined(separator: ",")
+        guard let lsofOutput = runProcess(executable: "/usr/sbin/lsof", arguments: ["-a", "-d", "cwd", "-p", pidArgument]) else {
+            return nil
+        }
+
+        return activeSessionCounts(psOutput: psOutput, lsofOutput: lsofOutput)
+    }
+
+    public static func activeSessionCounts(psOutput: String, lsofOutput: String) -> [String: Int] {
+        let pids = nativeCodexPIDs(from: psOutput)
+        var counts: [String: Int] = [:]
+
+        for line in lsofOutput.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            let parts = line.split(maxSplits: 8, whereSeparator: \.isWhitespace).map(String.init)
+            guard parts.count >= 9,
+                  let pid = Int(parts[1]),
+                  pids.contains(pid) else {
+                continue
+            }
+            counts[normalizedPath(parts[8]), default: 0] += 1
+        }
+
+        return counts
+    }
+
+    public static func normalizedPath(_ path: String) -> String {
+        let expanded = (path as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
+    private static func nativeCodexPIDs(from psOutput: String) -> Set<Int> {
+        var pids: Set<Int> = []
+
+        for line in psOutput.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            let parts = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(maxSplits: 1, whereSeparator: \.isWhitespace)
+                .map(String.init)
+            guard parts.count == 2,
+                  let pid = Int(parts[0]),
+                  isNativeCodexCommand(parts[1]) else {
+                continue
+            }
+            pids.insert(pid)
+        }
+
+        return pids
+    }
+
+    private static func isNativeCodexCommand(_ command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.hasPrefix("node "),
+              !trimmed.contains("ai-traffic-light") else {
+            return false
+        }
+
+        guard let executable = trimmed.split(whereSeparator: \.isWhitespace).first.map(String.init) else {
+            return false
+        }
+        return executable == "codex" || executable.hasSuffix("/bin/codex")
+    }
+
+    private static func runProcess(executable: String, arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return output
+        } catch {
+            return nil
+        }
     }
 }
 

@@ -27,6 +27,9 @@ try oldSessionIsInactive()
 try userMessageStartsWorkingTurn()
 try aggregatorUsesHighestPriorityStatus()
 try duplicateProjectNamesGetDisplayNumbers()
+try codexProcessSnapshotCountsNativeCodexCWDs()
+try sessionStoreDropsSessionsWithoutLiveCodexProcess()
+try sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount()
 try tokenUsageSumsLocalTodayAndLatestRateLimit()
 try tokenUsageReportsTotalAndTodayPercentWithTokens()
 
@@ -446,6 +449,55 @@ func duplicateProjectNamesGetDisplayNumbers() throws {
     try expect(summary.sessions.map(\.displayName) == ["tsailun #1", "tsailun #2", "design-anything"], "duplicate projects should get display numbers")
 }
 
+func codexProcessSnapshotCountsNativeCodexCWDs() throws {
+    let counts = RunningCodexProcesses.activeSessionCounts(
+        psOutput: """
+          PID COMMAND
+          101 node /Users/wuxing/.local/state/fnm_multishells/101/bin/codex
+          102 /Users/wuxing/.local/share/fnm/node-versions/v24.15.0/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+          201 node /Users/wuxing/.local/state/fnm_multishells/201/bin/codex
+          202 /Users/wuxing/.local/share/fnm/node-versions/v24.15.0/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+        """,
+        lsofOutput: """
+        COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+        node    101 wuxing cwd DIR 1,17 2400 31796 /Users/wuxing
+        codex   102 wuxing cwd DIR 1,17 608 15187469 /Users/wuxing/IdeaProjects/tsailun
+        node    201 wuxing cwd DIR 1,17 2400 31796 /Users/wuxing
+        codex   202 wuxing cwd DIR 1,17 608 15187470 /Users/wuxing/IdeaProjects/tsailun
+        """
+    )
+
+    try expect(counts == ["/Users/wuxing/IdeaProjects/tsailun": 2], "native codex child processes should be counted by cwd without node parent duplicates")
+}
+
+func sessionStoreDropsSessionsWithoutLiveCodexProcess() throws {
+    let sessions = [
+        AIAgentSession.stub(id: "s1", projectName: "lich-dms", status: .completed, lastActivity: date("2026-06-09T08:29:00Z"), cwd: "/Users/wuxing/IdeaProjects/lich-dms"),
+        AIAgentSession.stub(id: "s2", projectName: "tsailun", status: .working, lastActivity: date("2026-06-09T08:28:00Z"), cwd: "/Users/wuxing/IdeaProjects/tsailun")
+    ]
+
+    let filtered = CodexSessionStore.filterLiveSessions(
+        sessions,
+        activeSessionCountsByCWD: ["/Users/wuxing/IdeaProjects/tsailun": 1]
+    )
+
+    try expect(filtered.map(\.id) == ["s2"], "sessions without a live codex process cwd should be dropped")
+}
+
+func sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount() throws {
+    let sessions = [
+        AIAgentSession.stub(id: "old", projectName: "~", status: .completed, lastActivity: date("2026-06-09T08:20:00Z"), cwd: "/Users/wuxing"),
+        AIAgentSession.stub(id: "new", projectName: "~", status: .working, lastActivity: date("2026-06-09T08:29:00Z"), cwd: "/Users/wuxing")
+    ]
+
+    let filtered = CodexSessionStore.filterLiveSessions(
+        sessions,
+        activeSessionCountsByCWD: ["/Users/wuxing": 1]
+    )
+
+    try expect(filtered.map(\.id) == ["new"], "one live codex process should keep only the newest session for that cwd")
+}
+
 func tokenUsageSumsLocalTodayAndLatestRateLimit() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
@@ -645,14 +697,15 @@ extension AIAgentSession {
         id: String,
         projectName: String,
         status: SessionStatus,
-        lastActivity: Date = date("2026-06-09T08:20:00Z")
+        lastActivity: Date = date("2026-06-09T08:20:00Z"),
+        cwd: String? = nil
     ) -> AIAgentSession {
         AIAgentSession(
             id: id,
             source: .codex,
             projectName: projectName,
             displayName: projectName,
-            cwd: "/Users/wuxing/\(projectName)",
+            cwd: cwd ?? "/Users/wuxing/\(projectName)",
             status: status,
             lastActivity: lastActivity,
             pendingToolCalls: status == .working ? 1 : 0,
