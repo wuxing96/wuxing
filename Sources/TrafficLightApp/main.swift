@@ -283,7 +283,7 @@ final class TrafficLightView: NSView {
         }
 
         drawText(
-            compactMetricText(label: "Total", percent: totalPercentText(), tokens: totalTokensText(includeUnit: false)),
+            compactMetricText(label: "Week", percent: totalPercentText(), tokens: totalTokensText(includeUnit: false)),
             in: NSRect(x: bounds.maxX - 118, y: bounds.midY + 2, width: 104, height: 13),
             font: .monospacedDigitSystemFont(ofSize: 9, weight: .semibold),
             color: .white.withAlphaComponent(0.82),
@@ -309,7 +309,7 @@ final class TrafficLightView: NSView {
 
         let chipWidth = (bounds.width - 42) / 2
         drawTokenChip(
-            label: "Total used",
+            label: "This week",
             percent: totalPercentText(),
             tokens: totalTokensText(includeUnit: true),
             in: NSRect(x: 16, y: bounds.height - 78, width: chipWidth, height: 34)

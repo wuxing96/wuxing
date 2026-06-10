@@ -31,7 +31,7 @@ try codexProcessSnapshotCountsNativeCodexCWDs()
 try sessionStoreDropsSessionsWithoutLiveCodexProcess()
 try sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount()
 try tokenUsageSumsLocalTodayAndLatestRateLimit()
-try tokenUsageReportsTotalAndTodayPercentWithTokens()
+try tokenUsageReportsWeekAndTodayPercentWithTokens()
 
 print("core-self-test: passed")
 
@@ -518,14 +518,14 @@ func tokenUsageSumsLocalTodayAndLatestRateLimit() throws {
     try expect(summary.secondaryUsedPercent == 44, "token usage should keep the newest secondary limit")
 }
 
-func tokenUsageReportsTotalAndTodayPercentWithTokens() throws {
+func tokenUsageReportsWeekAndTodayPercentWithTokens() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
 
     let summary = CodexTokenUsageParser.parse(
         lines: [
             tokenCountLine(
-                timestamp: "2026-06-02T10:00:00.000Z",
+                timestamp: "2026-06-05T10:00:00.000Z",
                 totalTokens: 900,
                 primaryUsedPercent: 18,
                 secondaryUsedPercent: 35,
@@ -569,10 +569,10 @@ func tokenUsageReportsTotalAndTodayPercentWithTokens() throws {
         calendar: calendar
     )
 
-    try expect(summary.totalTokens == 1_400, "total tokens should sum the latest secondary limit window")
-    try expect(summary.totalUsedPercent == 40, "total percent should use the latest secondary limit")
+    try expect(summary.totalTokens == 1_400, "week tokens should sum only the current local week")
+    try expect(abs((summary.totalUsedPercent ?? 0) - 24.35) < 0.01, "week percent should estimate current-week usage from the latest secondary capacity")
     try expect(summary.todayTokens == 400, "today tokens should include only local-day token_count events")
-    try expect(abs((summary.todayUsedPercent ?? 0) - 11.43) < 0.01, "today percent should be estimated from the secondary token capacity")
+    try expect(abs((summary.todayUsedPercent ?? 0) - 6.96) < 0.01, "today percent should be estimated from the secondary token capacity")
 }
 
 func expect(_ condition: Bool, _ message: String) throws {

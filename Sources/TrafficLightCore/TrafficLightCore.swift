@@ -92,6 +92,7 @@ public struct TokenUsageSummary: Equatable, Sendable {
     public static let empty = TokenUsageSummary(
         totalTokens: 0,
         todayTokens: 0,
+        totalUsedPercent: nil,
         todayUsedPercent: nil,
         primaryUsedPercent: nil,
         primaryResetAt: nil,
@@ -102,6 +103,7 @@ public struct TokenUsageSummary: Equatable, Sendable {
 
     public let totalTokens: Int
     public let todayTokens: Int
+    public let totalUsedPercent: Double?
     public let todayUsedPercent: Double?
     public let primaryUsedPercent: Double?
     public let primaryResetAt: Date?
@@ -112,6 +114,7 @@ public struct TokenUsageSummary: Equatable, Sendable {
     public init(
         totalTokens: Int,
         todayTokens: Int,
+        totalUsedPercent: Double? = nil,
         todayUsedPercent: Double?,
         primaryUsedPercent: Double?,
         primaryResetAt: Date?,
@@ -121,16 +124,13 @@ public struct TokenUsageSummary: Equatable, Sendable {
     ) {
         self.totalTokens = totalTokens
         self.todayTokens = todayTokens
+        self.totalUsedPercent = totalUsedPercent ?? secondaryUsedPercent ?? primaryUsedPercent
         self.todayUsedPercent = todayUsedPercent
         self.primaryUsedPercent = primaryUsedPercent
         self.primaryResetAt = primaryResetAt
         self.secondaryUsedPercent = secondaryUsedPercent
         self.secondaryResetAt = secondaryResetAt
         self.updatedAt = updatedAt
-    }
-
-    public var totalUsedPercent: Double? {
-        secondaryUsedPercent ?? primaryUsedPercent
     }
 
     public var primaryRemainingPercent: Double? {
@@ -226,21 +226,28 @@ public enum CodexTokenUsageParser {
             latestSecondaryWindowMinutes = doubleValue(secondary?["window_minutes"])
         }
 
-        let totalTokens = currentLimitWindowTokens(
+        let limitWindowTokens = currentLimitWindowTokens(
             from: tokenEvents,
             now: now,
             resetAt: latestSecondaryResetAt ?? latestPrimaryResetAt,
             windowMinutes: latestSecondaryWindowMinutes ?? latestPrimaryWindowMinutes
         )
+        let weekTokens = currentWeekTokens(from: tokenEvents, now: now, calendar: calendar)
+        let totalUsedPercent = estimatedUsagePercent(
+            tokens: weekTokens,
+            totalTokens: limitWindowTokens,
+            totalUsedPercent: latestSecondaryUsedPercent ?? latestPrimaryUsedPercent
+        )
         let todayUsedPercent = estimatedUsagePercent(
             tokens: todayTokens,
-            totalTokens: totalTokens,
+            totalTokens: limitWindowTokens,
             totalUsedPercent: latestSecondaryUsedPercent ?? latestPrimaryUsedPercent
         )
 
         return TokenUsageSummary(
-            totalTokens: totalTokens,
+            totalTokens: weekTokens,
             todayTokens: todayTokens,
+            totalUsedPercent: totalUsedPercent,
             todayUsedPercent: todayUsedPercent,
             primaryUsedPercent: latestPrimaryUsedPercent,
             primaryResetAt: latestPrimaryResetAt,
@@ -304,6 +311,24 @@ public enum CodexTokenUsageParser {
         return events
             .filter { $0.timestamp >= windowStart && $0.timestamp <= now }
             .reduce(0) { $0 + $1.tokens }
+    }
+
+    private static func currentWeekTokens(
+        from events: [TokenEvent],
+        now: Date,
+        calendar: Calendar
+    ) -> Int {
+        let weekStart = localMondayWeekStart(for: now, calendar: calendar)
+        return events
+            .filter { $0.timestamp >= weekStart && $0.timestamp <= now }
+            .reduce(0) { $0 + $1.tokens }
+    }
+
+    private static func localMondayWeekStart(for date: Date, calendar: Calendar) -> Date {
+        let startOfToday = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: startOfToday)
+        let daysSinceMonday = (weekday + 5) % 7
+        return calendar.date(byAdding: .day, value: -daysSinceMonday, to: startOfToday) ?? startOfToday
     }
 
     private static func estimatedUsagePercent(
