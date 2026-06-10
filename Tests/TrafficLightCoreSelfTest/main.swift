@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import TrafficLightCore
 
 try pendingToolCallIsWorking()
@@ -32,6 +33,9 @@ try sessionStoreDropsSessionsWithoutLiveCodexProcess()
 try sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount()
 try tokenUsageSumsLocalTodayAndLatestRateLimit()
 try tokenUsageReportsWeekAndTodayPercentWithTokens()
+try productIdentityUsesMushiSignal()
+try statusRefreshPolicyIsSubsecond()
+try panelClickRulesAvoidAccidentalCollapse()
 
 print("core-self-test: passed")
 
@@ -573,6 +577,81 @@ func tokenUsageReportsWeekAndTodayPercentWithTokens() throws {
     try expect(abs((summary.totalUsedPercent ?? 0) - 24.35) < 0.01, "week percent should estimate current-week usage from the latest secondary capacity")
     try expect(summary.todayTokens == 400, "today tokens should include only local-day token_count events")
     try expect(abs((summary.todayUsedPercent ?? 0) - 6.96) < 0.01, "today percent should be estimated from the secondary token capacity")
+}
+
+func productIdentityUsesMushiSignal() throws {
+    try expect(TrafficLightProduct.displayName == "Mushi Signal", "product display name should use the chosen app name")
+}
+
+func statusRefreshPolicyIsSubsecond() throws {
+    try expect(TrafficLightRefreshPolicy.statusInterval <= 0.35, "status refresh should be fast enough to avoid visible 1-2s lag")
+    try expect(TrafficLightRefreshPolicy.tokenUsageInterval >= 20, "token usage refresh should stay lower frequency than live status")
+}
+
+func panelClickRulesAvoidAccidentalCollapse() throws {
+    let bounds = CGRect(x: 0, y: 0, width: 370, height: 266)
+
+    try expect(
+        TrafficLightPanelInteraction.clickAction(
+            mode: .collapsed,
+            mouseDown: CGPoint(x: 80, y: 20),
+            mouseUp: CGPoint(x: 80, y: 20),
+            bounds: bounds,
+            movedDuringDrag: false
+        ) == .expand,
+        "collapsed panel click should expand"
+    )
+
+    try expect(
+        TrafficLightPanelInteraction.clickAction(
+            mode: .expanded,
+            mouseDown: CGPoint(x: 180, y: 120),
+            mouseUp: CGPoint(x: 180, y: 120),
+            bounds: bounds,
+            movedDuringDrag: false
+        ) == .none,
+        "expanded content click should not collapse the panel"
+    )
+
+    try expect(
+        TrafficLightPanelInteraction.clickAction(
+            mode: .expanded,
+            mouseDown: CGPoint(x: 313, y: 241),
+            mouseUp: CGPoint(x: 313, y: 241),
+            bounds: bounds,
+            movedDuringDrag: false
+        ) == .collapse,
+        "expanded minus button click should collapse the panel"
+    )
+
+    try expect(
+        TrafficLightPanelInteraction.clickAction(
+            mode: .expanded,
+            mouseDown: CGPoint(x: 345, y: 241),
+            mouseUp: CGPoint(x: 345, y: 241),
+            bounds: bounds,
+            movedDuringDrag: false
+        ) == .requestClose,
+        "expanded x button click should request app close confirmation"
+    )
+
+    try expect(
+        TrafficLightPanelInteraction.canStartDrag(
+            mode: .expanded,
+            point: CGPoint(x: 48, y: 241),
+            bounds: bounds
+        ),
+        "expanded title area should remain draggable"
+    )
+
+    try expect(
+        !TrafficLightPanelInteraction.canStartDrag(
+            mode: .expanded,
+            point: CGPoint(x: 180, y: 120),
+            bounds: bounds
+        ),
+        "expanded content rows should not start a window drag"
+    )
 }
 
 func expect(_ condition: Bool, _ message: String) throws {

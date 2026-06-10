@@ -1,7 +1,7 @@
-AI Traffic Light
+Mushi Signal
 
 Install:
-1. Double-click "Install AI Traffic Light.pkg".
+1. Double-click "Install Mushi Signal.pkg".
 2. Finish the macOS Installer.
 3. The widget starts automatically for the current macOS user.
 
@@ -17,12 +17,12 @@ Requirement:
 - macOS 13 or newer.
 
 After install:
-- App: /Applications/AITrafficLight.app, or ~/Applications/AITrafficLight.app if /Applications is not writable
-- LaunchAgent: ~/Library/LaunchAgents/com.wuxing.ai-traffic-light.plist
-- Logs: /tmp/ai-traffic-light.log and /tmp/ai-traffic-light.err
+- App: /Applications/Mushi Signal.app, or ~/Applications/Mushi Signal.app if /Applications is not writable
+- LaunchAgent: ~/Library/LaunchAgents/com.wuxing.mushi-signal.plist
+- Logs: /tmp/mushi-signal.log and /tmp/mushi-signal.err
 
 If macOS blocks the unsigned installer:
-- Right-click "Install AI Traffic Light.pkg" and choose Open.
+- Right-click "Install Mushi Signal.pkg" and choose Open.
 
 Uninstall:
 Double-click Uninstall.command.

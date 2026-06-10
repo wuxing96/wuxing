@@ -1,4 +1,4 @@
-# AI Traffic Light
+# Mushi Signal
 
 Small local macOS floating status light for Codex sessions.
 

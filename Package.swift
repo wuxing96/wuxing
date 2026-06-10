@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AITrafficLight",
+    name: "MushiSignal",
     platforms: [
         .macOS(.v13)
     ],

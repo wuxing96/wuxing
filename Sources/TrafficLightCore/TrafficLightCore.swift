@@ -1,4 +1,122 @@
 import Foundation
+import CoreGraphics
+
+public enum TrafficLightPanelMode: Equatable, Sendable {
+    case collapsed
+    case expanded
+}
+
+public enum TrafficLightPanelHitRegion: Equatable, Sendable {
+    case collapseButton
+    case closeButton
+    case dragHandle
+    case content
+}
+
+public enum TrafficLightPanelClickAction: Equatable, Sendable {
+    case expand
+    case collapse
+    case requestClose
+    case none
+}
+
+public enum TrafficLightPanelInteraction {
+    public static let expandedTitleHeight: CGFloat = 52
+    public static let expandedCloseButtonSize: CGFloat = 24
+    public static let expandedCloseButtonRightMargin: CGFloat = 14
+    public static let expandedCloseButtonTopMargin: CGFloat = 16
+    public static let expandedWindowButtonSpacing: CGFloat = 8
+
+    public static func hitRegion(
+        mode: TrafficLightPanelMode,
+        point: CGPoint,
+        bounds: CGRect
+    ) -> TrafficLightPanelHitRegion {
+        switch mode {
+        case .collapsed:
+            return .dragHandle
+        case .expanded:
+            if closeButtonRect(in: bounds).contains(point) {
+                return .closeButton
+            }
+            if collapseButtonRect(in: bounds).contains(point) {
+                return .collapseButton
+            }
+            if point.y >= bounds.maxY - expandedTitleHeight {
+                return .dragHandle
+            }
+            return .content
+        }
+    }
+
+    public static func canStartDrag(
+        mode: TrafficLightPanelMode,
+        point: CGPoint,
+        bounds: CGRect
+    ) -> Bool {
+        switch hitRegion(mode: mode, point: point, bounds: bounds) {
+        case .dragHandle:
+            return true
+        case .collapseButton, .closeButton, .content:
+            return false
+        }
+    }
+
+    public static func clickAction(
+        mode: TrafficLightPanelMode,
+        mouseDown: CGPoint,
+        mouseUp: CGPoint,
+        bounds: CGRect,
+        movedDuringDrag: Bool
+    ) -> TrafficLightPanelClickAction {
+        guard !movedDuringDrag else {
+            return .none
+        }
+
+        switch mode {
+        case .collapsed:
+            return .expand
+        case .expanded:
+            let downRegion = hitRegion(mode: mode, point: mouseDown, bounds: bounds)
+            let upRegion = hitRegion(mode: mode, point: mouseUp, bounds: bounds)
+            if downRegion == .collapseButton && upRegion == .collapseButton {
+                return .collapse
+            }
+            if downRegion == .closeButton && upRegion == .closeButton {
+                return .requestClose
+            }
+            return .none
+        }
+    }
+
+    public static func closeButtonRect(in bounds: CGRect) -> CGRect {
+        CGRect(
+            x: bounds.maxX - expandedCloseButtonRightMargin - expandedCloseButtonSize,
+            y: bounds.maxY - expandedCloseButtonTopMargin - expandedCloseButtonSize,
+            width: expandedCloseButtonSize,
+            height: expandedCloseButtonSize
+        )
+    }
+
+    public static func collapseButtonRect(in bounds: CGRect) -> CGRect {
+        let closeRect = closeButtonRect(in: bounds)
+        return CGRect(
+            x: closeRect.minX - expandedWindowButtonSpacing - expandedCloseButtonSize,
+            y: closeRect.minY,
+            width: expandedCloseButtonSize,
+            height: expandedCloseButtonSize
+        )
+    }
+}
+
+public enum TrafficLightRefreshPolicy {
+    public static let statusInterval: TimeInterval = 0.25
+    public static let tokenUsageInterval: TimeInterval = 30
+}
+
+public enum TrafficLightProduct {
+    public static let displayName = "Mushi Signal"
+}
 
 public enum AgentSource: String, Codable, Equatable {
     case codex = "Codex"

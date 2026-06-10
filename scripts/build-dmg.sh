@@ -6,15 +6,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$ROOT/resources/Info.plist")"
 BUILD_ID="$(/bin/date +%Y%m%d%H%M%S)"
 DOWNLOADS="${DOWNLOADS:-$HOME/Downloads}"
-APP_NAME="AITrafficLight"
+APP_NAME="Mushi Signal"
 APP="$ROOT/dist/$APP_NAME.app"
 STAGE="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/ai-traffic-light-dmg.XXXXXX")"
 COMPONENT_ROOT="$STAGE/component"
 SCRIPTS_DIR="$STAGE/scripts"
 DMG_ROOT="$STAGE/dmg"
-PKG_NAME="Install AI Traffic Light.pkg"
+PKG_NAME="Install Mushi Signal.pkg"
 PKG="$STAGE/$PKG_NAME"
-DMG="$DOWNLOADS/$APP_NAME-$VERSION-$BUILD_ID.dmg"
+DMG="$DOWNLOADS/MushiSignal-$VERSION-$BUILD_ID.dmg"
 
 cleanup() {
   /bin/rm -rf "$STAGE"
@@ -35,7 +35,7 @@ trap cleanup EXIT
 /usr/bin/pkgbuild \
   --root "$COMPONENT_ROOT" \
   --scripts "$SCRIPTS_DIR" \
-  --identifier "com.wuxing.ai-traffic-light.pkg" \
+  --identifier "com.wuxing.mushi-signal.pkg" \
   --version "$VERSION" \
   --install-location "/" \
   "$PKG" >/dev/null
@@ -50,7 +50,7 @@ trap cleanup EXIT
 
 /bin/mkdir -p "$DOWNLOADS"
 /usr/bin/hdiutil create \
-  -volname "AI Traffic Light $VERSION" \
+  -volname "Mushi Signal $VERSION" \
   -srcfolder "$DMG_ROOT" \
   -format UDZO \
   "$DMG" >/dev/null

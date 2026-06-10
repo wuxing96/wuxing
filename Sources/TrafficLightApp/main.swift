@@ -11,14 +11,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var userMovedWindow = false
     private var isDragging = false
     private var refreshInFlight = false
+    private var refreshPending = false
     private var lastTokenRefresh = Date(timeIntervalSince1970: 0)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         trafficView = TrafficLightView(frame: NSRect(origin: .zero, size: Layout.collapsedSize))
-        trafficView.onToggle = { [weak self] in
-            self?.toggleExpanded()
+        trafficView.onSetExpanded = { [weak self] expanded in
+            self?.setExpanded(expanded)
         }
         trafficView.onMove = { [weak self] delta in
             self?.movePanel(by: delta)
@@ -29,8 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.refresh()
             }
         }
-        trafficView.onQuit = {
-            NSApp.terminate(nil)
+        trafficView.onRequestClose = { [weak self] in
+            self?.confirmQuit()
+        }
+        trafficView.onQuit = { [weak self] in
+            self?.confirmQuit()
+        }
+        trafficView.onResetPosition = { [weak self] in
+            self?.resetPanelPosition()
         }
 
         panel = NSPanel(
@@ -48,15 +55,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.ignoresMouseEvents = false
         panel.isReleasedWhenClosed = false
         panel.orderFrontRegardless()
+        panel.makeFirstResponder(trafficView)
 
         positionPanel(size: Layout.collapsedSize)
         refresh()
 
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: TrafficLightRefreshPolicy.statusInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -64,13 +74,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refresh() {
-        guard !isDragging, !refreshInFlight else {
+        guard !isDragging else {
+            return
+        }
+        if refreshInFlight {
+            refreshPending = true
             return
         }
         refreshInFlight = true
+        refreshPending = false
         let store = self.store
         let now = Date()
-        let shouldRefreshTokenUsage = now.timeIntervalSince(lastTokenRefresh) >= 30
+        let shouldRefreshTokenUsage = now.timeIntervalSince(lastTokenRefresh) >= TrafficLightRefreshPolicy.tokenUsageInterval
             || trafficView.summary.tokenUsage.updatedAt == nil
         let currentTokenUsage = trafficView.summary.tokenUsage
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -92,15 +107,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.isExpanded {
                     self.resizeExpandedPanel()
                 }
+                if self.refreshPending {
+                    self.refresh()
+                }
             }
         }
     }
 
     private func toggleExpanded() {
-        isExpanded.toggle()
+        setExpanded(!isExpanded)
+    }
+
+    private func setExpanded(_ expanded: Bool) {
+        guard isExpanded != expanded else {
+            return
+        }
+
+        isExpanded = expanded
         let size = isExpanded ? expandedSize() : Layout.collapsedSize
         trafficView.mode = isExpanded ? .expanded : .collapsed
         trafficView.setFrameSize(size)
+        panel.makeFirstResponder(trafficView)
 
         if userMovedWindow {
             let oldFrame = panel.frame
@@ -116,6 +143,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         } else {
             positionPanel(size: size, animate: true)
+        }
+    }
+
+    private func resetPanelPosition() {
+        userMovedWindow = false
+        let size = isExpanded ? expandedSize() : Layout.collapsedSize
+        positionPanel(size: size, animate: true)
+    }
+
+    private func confirmQuit() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Close \(TrafficLightProduct.displayName)?"
+        alert.informativeText = "The status window will stop watching Codex sessions until you launch it again."
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSApp.terminate(nil)
         }
     }
 
@@ -174,11 +219,12 @@ private enum Layout {
     static let minExpandedHeight: CGFloat = 220
     static let expandedHeaderHeight: CGFloat = 94
     static let rowHeight: CGFloat = 46
+    static let maxExpandedRows = 5
     static let expandedBottomMargin: CGFloat = 12
     static let screenMargin: CGFloat = 18
 
     static func expandedSize(sessionCount: Int, screenHeight: CGFloat) -> CGSize {
-        let rowCount = max(1, sessionCount)
+        let rowCount = max(1, min(sessionCount, maxExpandedRows))
         let desiredHeight = expandedHeaderHeight + CGFloat(rowCount) * rowHeight + expandedBottomMargin
         let maxHeight = max(minExpandedHeight, screenHeight - screenMargin * 2)
         return CGSize(
@@ -188,28 +234,28 @@ private enum Layout {
     }
 }
 
-private enum ViewMode {
-    case collapsed
-    case expanded
-}
-
 @MainActor
 final class TrafficLightView: NSView {
     var summary = SessionSummary(status: .inactive, sessions: []) {
         didSet { needsDisplay = true }
     }
-    fileprivate var mode: ViewMode = .collapsed {
+    fileprivate var mode: TrafficLightPanelMode = .collapsed {
         didSet { needsDisplay = true }
     }
-    var onToggle: (() -> Void)?
+    var onSetExpanded: ((Bool) -> Void)?
     var onMove: ((CGPoint) -> Void)?
     var onDragStateChange: ((Bool) -> Void)?
+    var onRequestClose: (() -> Void)?
     var onQuit: (() -> Void)?
+    var onResetPosition: (() -> Void)?
 
     private var dragStartInScreen: CGPoint?
+    private var mouseDownPoint: CGPoint?
+    private var dragAllowedForCurrentPress = false
     private var movedDuringDrag = false
 
     override var isFlipped: Bool { false }
+    override var acceptsFirstResponder: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -224,13 +270,24 @@ final class TrafficLightView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        window?.makeFirstResponder(self)
+        mouseDownPoint = point
         dragStartInScreen = NSEvent.mouseLocation
+        dragAllowedForCurrentPress = TrafficLightPanelInteraction.canStartDrag(
+            mode: mode,
+            point: point,
+            bounds: bounds
+        )
         movedDuringDrag = false
-        onDragStateChange?(true)
+        if dragAllowedForCurrentPress {
+            onDragStateChange?(true)
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let previous = dragStartInScreen else {
+        guard dragAllowedForCurrentPress,
+              let previous = dragStartInScreen else {
             return
         }
         let current = NSEvent.mouseLocation
@@ -243,18 +300,68 @@ final class TrafficLightView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        onDragStateChange?(false)
-        if !movedDuringDrag {
-            onToggle?()
+        if dragAllowedForCurrentPress {
+            onDragStateChange?(false)
         }
+        let point = convert(event.locationInWindow, from: nil)
+        let action = TrafficLightPanelInteraction.clickAction(
+            mode: mode,
+            mouseDown: mouseDownPoint ?? point,
+            mouseUp: point,
+            bounds: bounds,
+            movedDuringDrag: movedDuringDrag
+        )
+        switch action {
+        case .expand:
+            onSetExpanded?(true)
+        case .collapse:
+            onSetExpanded?(false)
+        case .requestClose:
+            onRequestClose?()
+        case .none:
+            break
+        }
+        dragAllowedForCurrentPress = false
         dragStartInScreen = nil
+        mouseDownPoint = nil
     }
 
     override func rightMouseUp(with event: NSEvent) {
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Quit AI Traffic Light", action: #selector(quitFromMenu), keyEquivalent: "q"))
-        menu.items.first?.target = self
+        let toggleItem = NSMenuItem(
+            title: mode == .expanded ? "Collapse" : "Expand",
+            action: #selector(toggleFromMenu),
+            keyEquivalent: ""
+        )
+        toggleItem.target = self
+        menu.addItem(toggleItem)
+
+        let resetItem = NSMenuItem(title: "Reset Position", action: #selector(resetPositionFromMenu), keyEquivalent: "")
+        resetItem.target = self
+        menu.addItem(resetItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit \(TrafficLightProduct.displayName)", action: #selector(quitFromMenu), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
         NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, mode == .expanded {
+            onSetExpanded?(false)
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    @objc private func toggleFromMenu() {
+        onSetExpanded?(mode == .collapsed)
+    }
+
+    @objc private func resetPositionFromMenu() {
+        onResetPosition?()
     }
 
     @objc private func quitFromMenu() {
@@ -305,6 +412,14 @@ final class TrafficLightView: NSView {
             font: .systemFont(ofSize: 16, weight: .semibold),
             color: .white.withAlphaComponent(0.94),
             alignment: .left
+        )
+        drawWindowButton(
+            kind: .collapse,
+            in: TrafficLightPanelInteraction.collapseButtonRect(in: bounds)
+        )
+        drawWindowButton(
+            kind: .close,
+            in: TrafficLightPanelInteraction.closeButtonRect(in: bounds)
         )
 
         let chipWidth = (bounds.width - 42) / 2
@@ -398,7 +513,48 @@ final class TrafficLightView: NSView {
 
     private func visibleRowCapacity() -> Int {
         let availableHeight = bounds.height - Layout.expandedHeaderHeight - Layout.expandedBottomMargin
-        return max(0, Int(floor(availableHeight / Layout.rowHeight)))
+        let capacity = max(0, Int(floor(availableHeight / Layout.rowHeight)))
+        if summary.sessions.count > capacity {
+            return max(0, capacity - 1)
+        }
+        return capacity
+    }
+
+    private enum WindowButtonKind {
+        case collapse
+        case close
+    }
+
+    private func drawWindowButton(kind: WindowButtonKind, in rect: NSRect) {
+        let path = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
+        NSColor.white.withAlphaComponent(0.065).setFill()
+        path.fill()
+        NSColor.white.withAlphaComponent(0.11).setStroke()
+        path.lineWidth = 0.8
+        path.stroke()
+
+        NSColor.white.withAlphaComponent(0.62).setStroke()
+        let inset = rect.insetBy(dx: 7, dy: 7)
+        switch kind {
+        case .collapse:
+            let minus = NSBezierPath()
+            minus.move(to: CGPoint(x: inset.minX, y: rect.midY))
+            minus.line(to: CGPoint(x: inset.maxX, y: rect.midY))
+            minus.lineWidth = 1.5
+            minus.stroke()
+        case .close:
+            let first = NSBezierPath()
+            first.move(to: CGPoint(x: inset.minX, y: inset.minY))
+            first.line(to: CGPoint(x: inset.maxX, y: inset.maxY))
+            first.lineWidth = 1.4
+            first.stroke()
+
+            let second = NSBezierPath()
+            second.move(to: CGPoint(x: inset.minX, y: inset.maxY))
+            second.line(to: CGPoint(x: inset.maxX, y: inset.minY))
+            second.lineWidth = 1.4
+            second.stroke()
+        }
     }
 
     private func drawLight(status: SessionStatus, active: Bool, center: CGPoint, radius: CGFloat) {
@@ -661,7 +817,7 @@ final class TrafficLightView: NSView {
         case .completed:
             return "Ready"
         case .inactive:
-            return "AI Traffic Light"
+            return TrafficLightProduct.displayName
         }
     }
 

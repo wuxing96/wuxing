@@ -5,13 +5,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>ai-traffic-light</string>
+	<string>mushi-signal</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.wuxing.ai-traffic-light</string>
+	<string>com.wuxing.mushi-signal</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>AI Traffic Light</string>
+	<string>Mushi Signal</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
