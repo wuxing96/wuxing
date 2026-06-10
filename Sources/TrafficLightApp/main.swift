@@ -309,7 +309,7 @@ final class TrafficLightView: NSView {
 
         let chipWidth = (bounds.width - 42) / 2
         drawTokenChip(
-            label: "This week",
+            label: "Quota for this week",
             percent: totalPercentText(),
             tokens: totalTokensText(includeUnit: true),
             in: NSRect(x: 16, y: bounds.height - 78, width: chipWidth, height: 34)
