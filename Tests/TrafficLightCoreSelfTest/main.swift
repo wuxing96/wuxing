@@ -34,6 +34,8 @@ try duplicateProjectNamesGetDisplayNumbers()
 try codexProcessSnapshotCountsNativeCodexCWDs()
 try codexProcessSnapshotExtractsTerminalTitleHints()
 try sessionStoreDropsSessionsWithoutLiveCodexProcess()
+try sessionStoreKeepsRecentlyEndedSessionsBriefly()
+try sessionStoreDropsExpiredEndedSessions()
 try sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount()
 try sessionStoreAssignsTerminalHintsByCWDRecency()
 try sessionStoreAssignsCodexProcessIDsByCWDRecency()
@@ -606,6 +608,43 @@ func sessionStoreDropsSessionsWithoutLiveCodexProcess() throws {
     )
 
     try expect(filtered.map(\.id) == ["s2"], "sessions without a live codex process cwd should be dropped")
+}
+
+func sessionStoreKeepsRecentlyEndedSessionsBriefly() throws {
+    let sessions = [
+        AIAgentSession.stub(id: "ended", projectName: "lich-dms", status: .completed, lastActivity: date("2026-06-09T08:29:20Z"), cwd: "/Users/wuxing/IdeaProjects/lich-dms"),
+        AIAgentSession.stub(id: "live", projectName: "tsailun", status: .working, lastActivity: date("2026-06-09T08:29:10Z"), cwd: "/Users/wuxing/IdeaProjects/tsailun")
+    ]
+
+    let filtered = CodexSessionStore.filterLiveSessions(
+        sessions,
+        activeSessions: [
+            RunningCodexProcess(pid: 102, cwd: "/Users/wuxing/IdeaProjects/tsailun")
+        ],
+        now: date("2026-06-09T08:39:20Z")
+    )
+
+    try expect(CodexSessionStore.defaultEndedRetention == 30 * 60, "ended sessions should remain visible long enough to notice after task completion")
+    try expect(filtered.map(\.id) == ["live", "ended"], "recently ended sessions should remain briefly after the codex process exits")
+    try expect(filtered[1].status == .ended, "recently ended sessions should be marked as ended")
+    try expect(filtered[1].codexProcessID == nil, "ended sessions should not expose a stale process id")
+}
+
+func sessionStoreDropsExpiredEndedSessions() throws {
+    let sessions = [
+        AIAgentSession.stub(id: "expired", projectName: "lich-dms", status: .completed, lastActivity: date("2026-06-09T08:27:00Z"), cwd: "/Users/wuxing/IdeaProjects/lich-dms"),
+        AIAgentSession.stub(id: "live", projectName: "tsailun", status: .working, lastActivity: date("2026-06-09T08:29:10Z"), cwd: "/Users/wuxing/IdeaProjects/tsailun")
+    ]
+
+    let filtered = CodexSessionStore.filterLiveSessions(
+        sessions,
+        activeSessions: [
+            RunningCodexProcess(pid: 102, cwd: "/Users/wuxing/IdeaProjects/tsailun")
+        ],
+        now: date("2026-06-09T09:00:00Z")
+    )
+
+    try expect(filtered.map(\.id) == ["live"], "ended sessions should be removed after the short retention window")
 }
 
 func sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount() throws {

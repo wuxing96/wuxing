@@ -263,7 +263,7 @@ public enum TrafficLightCollapsedStatusLayout {
             return "mushi-status-waiting"
         case .completed:
             return "mushi-status-done"
-        case .inactive:
+        case .ended, .inactive:
             return "mushi-status-idle"
         }
     }
@@ -464,6 +464,7 @@ public enum AgentSource: String, Codable, Equatable {
 
 public enum SessionStatus: String, Codable, Equatable, Hashable, Comparable, Sendable {
     case inactive
+    case ended
     case completed
     case working
     case waiting
@@ -472,6 +473,8 @@ public enum SessionStatus: String, Codable, Equatable, Hashable, Comparable, Sen
         switch self {
         case .inactive:
             return "Idle"
+        case .ended:
+            return "Ended"
         case .completed:
             return "Done"
         case .working:
@@ -489,8 +492,10 @@ public enum SessionStatus: String, Codable, Equatable, Hashable, Comparable, Sen
             return 3
         case .completed:
             return 1
-        case .inactive:
+        case .ended:
             return 0
+        case .inactive:
+            return -1
         }
     }
 
@@ -1776,16 +1781,21 @@ private final class CodexSessionStatusCache: @unchecked Sendable {
 }
 
 public struct CodexSessionStore: Sendable {
+    public static let defaultEndedRetention: TimeInterval = 30 * 60
+
     public let root: URL
     public let recentWindow: TimeInterval
+    public let endedRetention: TimeInterval
     private let sessionCache = CodexSessionStatusCache()
 
     public init(
         root: URL = URL(fileURLWithPath: "\(NSHomeDirectory())/.codex/sessions"),
-        recentWindow: TimeInterval = 8 * 60 * 60
+        recentWindow: TimeInterval = 8 * 60 * 60,
+        endedRetention: TimeInterval = Self.defaultEndedRetention
     ) {
         self.root = root
         self.recentWindow = recentWindow
+        self.endedRetention = endedRetention
     }
 
     public func loadSessions(now: Date = Date()) -> [AIAgentSession] {
@@ -1832,7 +1842,12 @@ public struct CodexSessionStore: Sendable {
             return sessions
         }
 
-        return Self.filterLiveSessions(sessions, activeSessions: activeSessions)
+        return Self.filterLiveSessions(
+            sessions,
+            activeSessions: activeSessions,
+            now: now,
+            endedRetention: endedRetention
+        )
     }
 
     public static func filterLiveSessions(
@@ -1860,7 +1875,9 @@ public struct CodexSessionStore: Sendable {
 
     public static func filterLiveSessions(
         _ sessions: [AIAgentSession],
-        activeSessions: [RunningCodexProcess]
+        activeSessions: [RunningCodexProcess],
+        now: Date = Date(),
+        endedRetention: TimeInterval = Self.defaultEndedRetention
     ) -> [AIAgentSession] {
         var activeSessionsByCWD = Dictionary(grouping: activeSessions) { process in
             RunningCodexProcesses.normalizedPath(process.cwd)
@@ -1873,6 +1890,9 @@ public struct CodexSessionStore: Sendable {
             let cwd = RunningCodexProcesses.normalizedPath(session.cwd)
             guard var processes = activeSessionsByCWD[cwd],
                   !processes.isEmpty else {
+                if now.timeIntervalSince(session.lastActivity) <= endedRetention {
+                    result.append(endedSession(from: session))
+                }
                 continue
             }
 
@@ -1883,7 +1903,32 @@ public struct CodexSessionStore: Sendable {
             updated.codexProcessID = process.pid
             result.append(updated)
         }
-        return result
+        return sortForDisplay(result)
+    }
+
+    private static func endedSession(from session: AIAgentSession) -> AIAgentSession {
+        AIAgentSession(
+            id: session.id,
+            source: session.source,
+            projectName: session.projectName,
+            displayName: session.displayName,
+            cwd: session.cwd,
+            status: .ended,
+            lastActivity: session.lastActivity,
+            pendingToolCalls: 0,
+            summary: "Codex process ended",
+            windowTitleHints: [],
+            codexProcessID: nil
+        )
+    }
+
+    private static func sortForDisplay(_ sessions: [AIAgentSession]) -> [AIAgentSession] {
+        sessions.sorted { lhs, rhs in
+            if lhs.status.sortPriority != rhs.status.sortPriority {
+                return lhs.status.sortPriority > rhs.status.sortPriority
+            }
+            return lhs.lastActivity > rhs.lastActivity
+        }
     }
 
     public func loadTokenUsage(now: Date = Date(), calendar: Calendar = .current) -> TokenUsageSummary {

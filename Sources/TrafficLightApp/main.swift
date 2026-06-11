@@ -1648,6 +1648,8 @@ final class TrafficLightView: NSView {
             return NSColor(calibratedRed: 1.00, green: 0.72, blue: 0.14, alpha: 1)
         case .completed:
             return NSColor(calibratedRed: 0.36, green: 0.88, blue: 0.35, alpha: 1)
+        case .ended:
+            return NSColor(calibratedWhite: 0.58, alpha: 1)
         case .inactive:
             return NSColor(calibratedWhite: 0.55, alpha: 1)
         }
@@ -1661,6 +1663,8 @@ final class TrafficLightView: NSView {
             return "Codex is working"
         case .completed:
             return "Ready"
+        case .ended:
+            return "Recently ended"
         case .inactive:
             return TrafficLightProduct.displayName
         }
