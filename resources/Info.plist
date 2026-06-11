@@ -6,6 +6,8 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>mushi-signal</string>
+	<key>CFBundleIconFile</key>
+	<string>MushiSignal</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.wuxing.mushi-signal</string>
 	<key>CFBundleInfoDictionaryVersion</key>

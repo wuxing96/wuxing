@@ -26,16 +26,43 @@ try turnAbortedIsCompleted()
 try assistantMessageIsCompleted()
 try oldSessionIsInactive()
 try userMessageStartsWorkingTurn()
+try userMessageClearsStaleApprovalWait()
+try sessionFileStatusReaderUsesHeadAndTail()
 try aggregatorUsesHighestPriorityStatus()
+try aggregatorSortsByAttentionThenRecentActivity()
 try duplicateProjectNamesGetDisplayNumbers()
 try codexProcessSnapshotCountsNativeCodexCWDs()
+try codexProcessSnapshotExtractsTerminalTitleHints()
 try sessionStoreDropsSessionsWithoutLiveCodexProcess()
 try sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount()
+try sessionStoreAssignsTerminalHintsByCWDRecency()
+try sessionStoreAssignsCodexProcessIDsByCWDRecency()
+try codexProcessOwnerPIDResolvesTerminalAncestor()
 try tokenUsageSumsLocalTodayAndLatestRateLimit()
 try tokenUsageReportsWeekAndTodayPercentWithTokens()
+try tokenUsageReportsWeeklyQuotaLeftFromCodexLimits()
+try tokenUsageIgnoresModelSpecificZeroLimitForWeeklyQuota()
+try tokenUsageIgnoresModelSpecificNonzeroLimitForWeeklyQuota()
+try tokenUsageIgnoresExpiredWeeklyQuota()
+try tokenUsageUsesNewestBillingModeWhenAPIRecordFollowsWeeklyQuota()
+try tokenUsageReportsTotalRemainingCreditsForAPIUsage()
 try productIdentityUsesMushiSignal()
 try statusRefreshPolicyIsSubsecond()
+try sessionFileReaderUsesSmallTailWindow()
+try expandedHeaderShowsProcessCount()
+try expandedHeaderUsesMushiStatusAsset()
+try collapsedStatusUsesThreeMushiSlots()
 try panelClickRulesAvoidAccidentalCollapse()
+try windowControlsUseCompactVisualsWithLargeHitTargets()
+try expandedListLayoutCapsRowsAndClampsScroll()
+try expandedListPreservesScrollAnchorAcrossRefresh()
+try sessionRowLayoutSeparatesStatusAndTime()
+try sessionRowLayoutExposesSeparateOpenAndStopActions()
+try panelResizeRulesUseBottomRightGrip()
+try workspaceWindowMatcherPrefersCodexTerminalThenIDE()
+try workspaceWindowMatcherUsesTerminalHintBeforeHomeDirectory()
+try workspaceWindowMatcherSupportsLocalizedTerminalAppName()
+try workspaceWindowMatcherSupportsJetBrainsAndTrae()
 
 print("core-self-test: passed")
 
@@ -428,6 +455,62 @@ func userMessageStartsWorkingTurn() throws {
     try expect(session.status == .working, "user message should start a working turn")
 }
 
+func userMessageClearsStaleApprovalWait() throws {
+    let session = try CodexSessionParser.parse(
+        lines: [
+            sessionMeta(id: "s1", cwd: "/Users/wuxing/ai-traffic-light"),
+            responseFunctionCall(
+                name: "exec_command",
+                callID: "call-1",
+                arguments: #"{"cmd":"swift run core-self-test","sandbox_permissions":"require_escalated"}"#
+            ),
+            userMessage("continue with a different task")
+        ],
+        filePath: "/tmp/rollout-s1.jsonl",
+        now: date("2026-06-09T08:30:00Z")
+    )
+
+    try expect(session.status == .working, "new user input should start working instead of inheriting the previous approval wait")
+    try expect(session.pendingToolCalls == 0, "new user input should clear stale pending approval calls")
+    try expect(session.summary == "New request", "new user input should show the current request summary")
+}
+
+func sessionFileStatusReaderUsesHeadAndTail() throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("mushi-session-reader-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let fileURL = directory.appendingPathComponent("rollout-large.jsonl")
+    let oldBody = String(repeating: responseReasoning() + "\n", count: 256)
+    let contents = [
+        sessionMeta(id: "large", cwd: "/Users/wuxing/IdeaProjects/tsailun"),
+        oldBody,
+        userMessage("new work"),
+        responseFunctionCall(
+            name: "exec_command",
+            callID: "call-tail",
+            arguments: #"{"cmd":"npm run dev"}"#
+        )
+    ].joined(separator: "\n")
+    try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let lines = CodexSessionFileReader.statusLines(
+        fileURL: fileURL,
+        headByteLimit: 512,
+        tailByteLimit: 2_048
+    )
+    let session = try CodexSessionParser.parse(
+        lines: lines,
+        filePath: fileURL.path,
+        now: date("2026-06-09T08:30:00Z")
+    )
+
+    try expect(lines.count < 40, "live status reader should not return the entire session body")
+    try expect(session.cwd == "/Users/wuxing/IdeaProjects/tsailun", "status reader should preserve cwd from the file head")
+    try expect(session.status == .working, "status reader should use the latest tail event")
+    try expect(session.summary == "npm run dev", "status reader should preserve the latest command summary")
+}
+
 func aggregatorUsesHighestPriorityStatus() throws {
     let sessions = [
         AIAgentSession.stub(id: "s1", projectName: "api", status: .completed),
@@ -439,6 +522,22 @@ func aggregatorUsesHighestPriorityStatus() throws {
 
     try expect(summary.status == .waiting, "summary should show user action as the highest priority")
     try expect(summary.sessions.map(\.status) == [.waiting, .working, .completed], "sessions should sort waiting before running work and completed")
+    try expect(SessionStatus.waiting.label == "Waiting", "yellow status label should fit in the row status pill")
+}
+
+func aggregatorSortsByAttentionThenRecentActivity() throws {
+    let summary = SessionAggregator.aggregate([
+        AIAgentSession.stub(id: "ready-new", projectName: "ready-new", status: .completed, lastActivity: date("2026-06-09T08:35:00Z")),
+        AIAgentSession.stub(id: "working-old", projectName: "working-old", status: .working, lastActivity: date("2026-06-09T08:30:00Z")),
+        AIAgentSession.stub(id: "waiting-old", projectName: "waiting-old", status: .waiting, lastActivity: date("2026-06-09T08:20:00Z")),
+        AIAgentSession.stub(id: "waiting-new", projectName: "waiting-new", status: .waiting, lastActivity: date("2026-06-09T08:40:00Z")),
+        AIAgentSession.stub(id: "working-new", projectName: "working-new", status: .working, lastActivity: date("2026-06-09T08:38:00Z"))
+    ])
+
+    try expect(
+        summary.sessions.map(\.id) == ["waiting-new", "waiting-old", "working-new", "working-old", "ready-new"],
+        "sessions should sort by attention first, then newest activity inside each status group"
+    )
 }
 
 func duplicateProjectNamesGetDisplayNumbers() throws {
@@ -474,6 +573,27 @@ func codexProcessSnapshotCountsNativeCodexCWDs() throws {
     try expect(counts == ["/Users/wuxing/IdeaProjects/tsailun": 2], "native codex child processes should be counted by cwd without node parent duplicates")
 }
 
+func codexProcessSnapshotExtractsTerminalTitleHints() throws {
+    let sessions = RunningCodexProcesses.activeSessions(
+        psOutput: """
+          PID  PPID COMMAND
+          101     1 node /Users/wuxing/.local/state/fnm_multishells/12534_1781085967351/bin/codex
+          102   101 /Users/wuxing/.local/share/fnm/node-versions/v24.15.0/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+          201     1 node /Users/wuxing/.local/state/fnm_multishells/12844_1781085992565/bin/codex
+          202   201 /Users/wuxing/.local/share/fnm/node-versions/v24.15.0/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+        """,
+        lsofOutput: """
+        COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+        codex   102 wuxing cwd DIR 1,17 2400 31796 /Users/wuxing
+        codex   202 wuxing cwd DIR 1,17 2400 31796 /Users/wuxing
+        """
+    )
+
+    try expect(sessions.map(\.pid) == [102, 202], "active sessions should include native codex child pids")
+    try expect(sessions.map(\.cwd) == ["/Users/wuxing", "/Users/wuxing"], "active sessions should include the native codex cwd")
+    try expect(sessions.map(\.windowTitleHints) == [["12534_1781085967351"], ["12844_1781085992565"]], "active sessions should expose fnm multishell ids as terminal title hints")
+}
+
 func sessionStoreDropsSessionsWithoutLiveCodexProcess() throws {
     let sessions = [
         AIAgentSession.stub(id: "s1", projectName: "lich-dms", status: .completed, lastActivity: date("2026-06-09T08:29:00Z"), cwd: "/Users/wuxing/IdeaProjects/lich-dms"),
@@ -502,6 +622,60 @@ func sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount() throws {
     try expect(filtered.map(\.id) == ["new"], "one live codex process should keep only the newest session for that cwd")
 }
 
+func sessionStoreAssignsTerminalHintsByCWDRecency() throws {
+    let sessions = [
+        AIAgentSession.stub(id: "old", projectName: "~", status: .completed, lastActivity: date("2026-06-09T08:20:00Z"), cwd: "/Users/wuxing"),
+        AIAgentSession.stub(id: "new", projectName: "~", status: .working, lastActivity: date("2026-06-09T08:29:00Z"), cwd: "/Users/wuxing")
+    ]
+
+    let filtered = CodexSessionStore.filterLiveSessions(
+        sessions,
+        activeSessions: [
+            RunningCodexProcess(pid: 202, cwd: "/Users/wuxing", windowTitleHints: ["12844_1781085992565"]),
+            RunningCodexProcess(pid: 102, cwd: "/Users/wuxing", windowTitleHints: ["12534_1781085967351"])
+        ]
+    )
+
+    try expect(filtered.map(\.id) == ["new", "old"], "active process hints should keep sessions in recency order")
+    try expect(filtered.map(\.windowTitleHints) == [["12844_1781085992565"], ["12534_1781085967351"]], "active process hints should be assigned by cwd recency")
+}
+
+func sessionStoreAssignsCodexProcessIDsByCWDRecency() throws {
+    let sessions = [
+        AIAgentSession.stub(id: "old", projectName: "~", status: .completed, lastActivity: date("2026-06-09T08:20:00Z"), cwd: "/Users/wuxing"),
+        AIAgentSession.stub(id: "new", projectName: "~", status: .working, lastActivity: date("2026-06-09T08:29:00Z"), cwd: "/Users/wuxing")
+    ]
+
+    let filtered = CodexSessionStore.filterLiveSessions(
+        sessions,
+        activeSessions: [
+            RunningCodexProcess(pid: 202, cwd: "/Users/wuxing", windowTitleHints: ["12844_1781085992565"]),
+            RunningCodexProcess(pid: 102, cwd: "/Users/wuxing", windowTitleHints: ["12534_1781085967351"])
+        ]
+    )
+
+    try expect(filtered.map(\.codexProcessID) == [202, 102], "active process pid should be assigned to the matching session")
+}
+
+func codexProcessOwnerPIDResolvesTerminalAncestor() throws {
+    let psOutput = """
+      PID  PPID COMMAND
+    61419     1 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+    61421 61419 -zsh
+    99503 61421 node /Users/wuxing/.local/state/fnm_multishells/61429_1780995698425/bin/codex
+    99506 99503 /Users/wuxing/.local/share/fnm/node-versions/v24.15.0/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex
+    """
+
+    try expect(
+        RunningCodexProcesses.nearestAncestorPID(
+            from: 99506,
+            candidatePIDs: [61419],
+            psOutput: psOutput
+        ) == 61419,
+        "native Codex process should resolve its owning terminal app ancestor"
+    )
+}
+
 func tokenUsageSumsLocalTodayAndLatestRateLimit() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
@@ -520,6 +694,8 @@ func tokenUsageSumsLocalTodayAndLatestRateLimit() throws {
     try expect(summary.primaryUsedPercent == 22, "token usage should keep the newest primary limit")
     try expect(summary.primaryRemainingPercent == 78, "token usage should expose remaining primary quota")
     try expect(summary.secondaryUsedPercent == 44, "token usage should keep the newest secondary limit")
+    try expect(summary.secondaryRemainingPercent == 56, "token usage should expose remaining secondary quota")
+    try expect(summary.totalRemainingPercent == 56, "weekly quota should prefer remaining secondary quota")
 }
 
 func tokenUsageReportsWeekAndTodayPercentWithTokens() throws {
@@ -574,9 +750,206 @@ func tokenUsageReportsWeekAndTodayPercentWithTokens() throws {
     )
 
     try expect(summary.totalTokens == 1_400, "week tokens should sum only the current local week")
-    try expect(abs((summary.totalUsedPercent ?? 0) - 24.35) < 0.01, "week percent should estimate current-week usage from the latest secondary capacity")
+    try expect(summary.totalUsedPercent == 40, "week used percent should mirror the latest Codex weekly limit")
+    try expect(summary.totalRemainingPercent == 60, "week remaining percent should mirror the latest Codex weekly limit left")
     try expect(summary.todayTokens == 400, "today tokens should include only local-day token_count events")
     try expect(abs((summary.todayUsedPercent ?? 0) - 6.96) < 0.01, "today percent should be estimated from the secondary token capacity")
+}
+
+func tokenUsageReportsWeeklyQuotaLeftFromCodexLimits() throws {
+    let summary = CodexTokenUsageParser.parse(
+        lines: [
+            tokenCountLine(
+                timestamp: "2026-06-11T01:00:00.000Z",
+                totalTokens: 26_700,
+                primaryUsedPercent: 25,
+                secondaryUsedPercent: 1,
+                primaryWindowMinutes: 300,
+                primaryResetAt: "2026-06-11T01:46:00Z",
+                secondaryWindowMinutes: 10080,
+                secondaryResetAt: "2026-06-18T00:40:00Z"
+            )
+        ],
+        now: date("2026-06-11T01:20:00Z")
+    )
+
+    try expect(summary.primaryRemainingPercent == 75, "5h limit should expose 75 percent left")
+    try expect(summary.secondaryRemainingPercent == 99, "weekly limit should expose 99 percent left")
+    try expect(summary.totalRemainingPercent == 99, "week display should use weekly quota left")
+}
+
+func tokenUsageIgnoresModelSpecificZeroLimitForWeeklyQuota() throws {
+    let summary = CodexTokenUsageParser.parse(
+        lines: [
+            tokenCountLine(
+                timestamp: "2026-06-11T01:00:00.000Z",
+                totalTokens: 26_700,
+                primaryUsedPercent: 25,
+                secondaryUsedPercent: 1,
+                primaryWindowMinutes: 300,
+                primaryResetAt: "2026-06-11T01:46:00Z",
+                secondaryWindowMinutes: 10080,
+                secondaryResetAt: "2026-06-18T00:40:00Z",
+                limitID: "codex"
+            ),
+            tokenCountLine(
+                timestamp: "2026-06-11T07:20:00.000Z",
+                totalTokens: 160_000,
+                primaryUsedPercent: 0,
+                secondaryUsedPercent: 0,
+                primaryWindowMinutes: 300,
+                primaryResetAt: "2026-06-11T08:20:00Z",
+                secondaryWindowMinutes: 10080,
+                secondaryResetAt: "2026-06-16T20:40:00Z",
+                limitID: "codex_bengalfox"
+            )
+        ],
+        now: date("2026-06-11T07:30:00Z")
+    )
+
+    try expect(summary.primaryUsedPercent == 25, "model-specific zero primary limit should not replace global primary quota")
+    try expect(summary.secondaryUsedPercent == 1, "model-specific zero weekly limit should not replace global weekly quota")
+    try expect(summary.totalRemainingPercent == 99, "weekly display should keep global quota left instead of showing 100 percent")
+}
+
+func tokenUsageIgnoresModelSpecificNonzeroLimitForWeeklyQuota() throws {
+    let summary = CodexTokenUsageParser.parse(
+        lines: [
+            tokenCountLine(
+                timestamp: "2026-06-11T01:00:00.000Z",
+                totalTokens: 26_700,
+                primaryUsedPercent: 25,
+                secondaryUsedPercent: 1,
+                primaryWindowMinutes: 300,
+                primaryResetAt: "2026-06-11T01:46:00Z",
+                secondaryWindowMinutes: 10080,
+                secondaryResetAt: "2026-06-18T00:40:00Z",
+                limitID: "codex"
+            ),
+            tokenCountLine(
+                timestamp: "2026-06-11T07:20:00.000Z",
+                totalTokens: 160_000,
+                primaryUsedPercent: 60,
+                secondaryUsedPercent: 22,
+                primaryWindowMinutes: 300,
+                primaryResetAt: "2026-06-11T08:20:00Z",
+                secondaryWindowMinutes: 10080,
+                secondaryResetAt: "2026-06-16T20:40:00Z",
+                limitID: "codex_bengalfox"
+            )
+        ],
+        now: date("2026-06-11T07:30:00Z")
+    )
+
+    try expect(summary.primaryUsedPercent == 25, "model-specific primary limit should not replace the global account quota")
+    try expect(summary.secondaryUsedPercent == 1, "model-specific weekly limit should not replace the global account quota")
+    try expect(summary.totalRemainingPercent == 99, "weekly display should keep the global account quota instead of a model quota")
+}
+
+func tokenUsageIgnoresExpiredWeeklyQuota() throws {
+    let summary = CodexTokenUsageParser.parse(
+        lines: [
+            tokenCountLine(
+                timestamp: "2026-05-28T08:00:00.000Z",
+                totalTokens: 100_000,
+                primaryUsedPercent: 2,
+                secondaryUsedPercent: 13,
+                primaryWindowMinutes: 300,
+                primaryResetAt: "2026-05-28T10:00:00Z",
+                secondaryWindowMinutes: 10080,
+                secondaryResetAt: "2026-05-31T00:00:00Z",
+                limitID: "codex"
+            ),
+            tokenCountLine(
+                timestamp: "2026-06-11T07:20:00.000Z",
+                totalTokens: 160_000,
+                primaryUsedPercent: 0,
+                secondaryUsedPercent: 0,
+                primaryWindowMinutes: 300,
+                primaryResetAt: "2026-06-11T08:20:00Z",
+                secondaryWindowMinutes: 10080,
+                secondaryResetAt: "2026-06-16T20:40:00Z",
+                limitID: "codex_bengalfox"
+            )
+        ],
+        now: date("2026-06-11T07:30:00Z")
+    )
+
+    try expect(summary.totalRemainingPercent == nil, "expired weekly quota should not be displayed as current account balance")
+}
+
+func tokenUsageUsesNewestBillingModeWhenAPIRecordFollowsWeeklyQuota() throws {
+    let summary = CodexTokenUsageParser.parse(
+        lines: [
+            tokenCountLine(
+                timestamp: "2026-06-11T01:00:00.000Z",
+                totalTokens: 26_700,
+                primaryUsedPercent: 25,
+                secondaryUsedPercent: 1,
+                primaryWindowMinutes: 300,
+                primaryResetAt: "2026-06-11T01:46:00Z",
+                secondaryWindowMinutes: 10080,
+                secondaryResetAt: "2026-06-18T00:40:00Z",
+                limitID: "codex"
+            ),
+            apiCreditTokenCountLine(
+                timestamp: "2026-06-11T07:20:00.000Z",
+                totalTokens: 160_000,
+                remainingCredits: 7.25,
+                totalCredits: 20,
+                currency: "USD"
+            )
+        ],
+        now: date("2026-06-11T07:30:00Z")
+    )
+
+    let weekly = TrafficLightTokenDisplay.weekly(summary)
+
+    try expect(summary.totalRemainingPercent == nil, "newer API billing record should suppress older weekly quota")
+    try expect(summary.todayUsedPercent == nil, "API billing mode should not estimate today percent from an older weekly quota")
+    try expect(weekly.label == "API balance", "newer API billing record should switch the weekly chip to API balance")
+    try expect(weekly.primary == "$7.25 left", "API billing mode should show remaining API balance")
+    try expect(TrafficLightTokenDisplay.compactWeekly(summary) == "API $7.25 left", "collapsed API billing mode should show API balance")
+}
+
+func tokenUsageReportsTotalRemainingCreditsForAPIUsage() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+
+    let summary = CodexTokenUsageParser.parse(
+        lines: [
+            apiCreditTokenCountLine(
+                timestamp: "2026-06-08T10:00:00.000Z",
+                totalTokens: 1_000_000,
+                remainingCredits: 18.20,
+                totalCredits: 20,
+                currency: "USD"
+            ),
+            apiCreditTokenCountLine(
+                timestamp: "2026-06-11T02:00:00.000Z",
+                totalTokens: 53_000_000,
+                remainingCredits: 16.41,
+                totalCredits: 20,
+                currency: "USD"
+            )
+        ],
+        now: date("2026-06-11T04:00:00Z"),
+        calendar: calendar
+    )
+
+    let weekly = TrafficLightTokenDisplay.weekly(summary)
+    let today = TrafficLightTokenDisplay.today(summary)
+
+    try expect(summary.totalTokens == 54_000_000, "API-only logs should still sum weekly token usage")
+    try expect(summary.totalRemainingPercent == nil, "API-only logs should not invent a quota percentage")
+    try expect(summary.creditBalance?.remaining == 16.41, "API credit parser should keep the latest remaining balance")
+    try expect(weekly.label == "API balance", "API credit chip should identify API billing mode")
+    try expect(weekly.primary == "$16.41 left", "API credit chip should show total remaining balance")
+    try expect(weekly.secondary == nil, "API credit chip should stay focused on remaining balance")
+    try expect(today.primary == "53M tok", "API-only today chip should show today's token usage when no percent exists")
+    try expect(today.secondary == nil, "API-only today chip should not show a missing percent beside token usage")
+    try expect(TrafficLightTokenDisplay.compactWeekly(summary) == "API $16.41 left", "collapsed API display should show total remaining balance")
+    try expect(TrafficLightTokenDisplay.compactToday(summary) == "Today 53M tok", "collapsed API display should show today's token usage")
 }
 
 func productIdentityUsesMushiSignal() throws {
@@ -584,8 +957,41 @@ func productIdentityUsesMushiSignal() throws {
 }
 
 func statusRefreshPolicyIsSubsecond() throws {
-    try expect(TrafficLightRefreshPolicy.statusInterval <= 0.35, "status refresh should be fast enough to avoid visible 1-2s lag")
+    try expect(TrafficLightRefreshPolicy.statusInterval <= 0.05, "status refresh should target 50ms-level status pickup")
     try expect(TrafficLightRefreshPolicy.tokenUsageInterval >= 20, "token usage refresh should stay lower frequency than live status")
+}
+
+func sessionFileReaderUsesSmallTailWindow() throws {
+    try expect(CodexSessionFileReader.defaultHeadByteLimit <= 16 * 1_024, "live status reader should keep the default head window small")
+    try expect(CodexSessionFileReader.defaultTailByteLimit <= 256 * 1_024, "live status reader should keep the default tail window small")
+}
+
+func expandedHeaderShowsProcessCount() throws {
+    try expect(TrafficLightExpandedHeader.title == "AI SESSIONS", "expanded header should keep the AI sessions label")
+    try expect(TrafficLightExpandedHeader.iconHeight == TrafficLightExpandedHeader.titleLineHeight, "mushi icon should match the title line height")
+    try expect(TrafficLightExpandedHeader.countFontSize == TrafficLightExpandedHeader.titleFontSize, "process count should use the same size as the AI sessions label")
+    try expect(TrafficLightExpandedHeader.countText(sessionCount: 0) == "0", "expanded header count should handle zero processes")
+    try expect(TrafficLightExpandedHeader.countText(sessionCount: 4) == "4", "expanded header count should show current process count")
+}
+
+func expandedHeaderUsesMushiStatusAsset() throws {
+    try expect(TrafficLightExpandedHeader.iconAssetName == "mushi-status-header", "header should use the neutral Mushi status asset")
+}
+
+func collapsedStatusUsesThreeMushiSlots() throws {
+    let bounds = CGRect(x: 0, y: 0, width: 214, height: 44)
+    let slots = TrafficLightCollapsedStatusLayout.statuses.enumerated().map { index, _ in
+        TrafficLightCollapsedStatusLayout.iconRect(index: index, in: bounds)
+    }
+
+    try expect(TrafficLightCollapsedStatusLayout.statuses == [.working, .waiting, .completed], "collapsed status order should be red, yellow, green")
+    try expect(TrafficLightCollapsedStatusLayout.assetName(for: .working, count: 1) == "mushi-status-working", "working slot should use the red Mushi asset when active")
+    try expect(TrafficLightCollapsedStatusLayout.assetName(for: .waiting, count: 1) == "mushi-status-waiting", "waiting slot should use the yellow Mushi asset when active")
+    try expect(TrafficLightCollapsedStatusLayout.assetName(for: .completed, count: 1) == "mushi-status-done", "done slot should use the green Mushi asset when active")
+    try expect(TrafficLightCollapsedStatusLayout.assetName(for: .working, count: 0) == "mushi-status-idle", "inactive collapsed slots should use the gray hanging-up Mushi asset")
+    try expect(slots.allSatisfy { $0.width == TrafficLightCollapsedStatusLayout.iconSize && $0.height == TrafficLightCollapsedStatusLayout.iconSize }, "collapsed Mushi slots should use stable icon dimensions")
+    try expect(!slots[0].intersects(slots[1]) && !slots[1].intersects(slots[2]), "collapsed Mushi slots should not overlap")
+    try expect(slots[2].maxX <= 96, "collapsed Mushi group should leave room for compact quota text")
 }
 
 func panelClickRulesAvoidAccidentalCollapse() throws {
@@ -611,6 +1017,17 @@ func panelClickRulesAvoidAccidentalCollapse() throws {
             movedDuringDrag: false
         ) == .none,
         "expanded content click should not collapse the panel"
+    )
+
+    try expect(
+        TrafficLightPanelInteraction.clickAction(
+            mode: .expanded,
+            mouseDown: CGPoint(x: 281, y: 241),
+            mouseUp: CGPoint(x: 281, y: 241),
+            bounds: bounds,
+            movedDuringDrag: false
+        ) == .none,
+        "expanded panel should not expose a zoom button"
     )
 
     try expect(
@@ -652,6 +1069,282 @@ func panelClickRulesAvoidAccidentalCollapse() throws {
         ),
         "expanded content rows should not start a window drag"
     )
+}
+
+func windowControlsUseCompactVisualsWithLargeHitTargets() throws {
+    try expect(TrafficLightPanelInteraction.expandedCloseButtonSize >= 22, "window controls should keep a forgiving hit target")
+    try expect(TrafficLightPanelInteraction.expandedWindowButtonSpacing <= 5, "minus and close controls should use macOS-style compact spacing")
+    try expect(TrafficLightPanelInteraction.collapseButtonRect(in: CGRect(x: 0, y: 0, width: 370, height: 266)).maxX < TrafficLightPanelInteraction.closeButtonRect(in: CGRect(x: 0, y: 0, width: 370, height: 266)).minX, "minus button should sit beside close control")
+    try expect(TrafficLightWindowControlStyle.visualDiameter <= 13, "window control visual should stay compact")
+    try expect(TrafficLightWindowControlStyle.visualDiameter < TrafficLightPanelInteraction.expandedCloseButtonSize, "visual control should be smaller than hit target")
+}
+
+func expandedListLayoutCapsRowsAndClampsScroll() throws {
+    try expect(TrafficLightExpandedListLayout.defaultVisibleRows == 3, "expanded panel should default to three visible tasks")
+    try expect(TrafficLightExpandedListLayout.visibleRowCount(sessionCount: 12, preferredVisibleRows: 3) == 3, "expanded list should use the default three rows")
+    try expect(TrafficLightExpandedListLayout.visibleRowCount(sessionCount: 12, preferredVisibleRows: 7) == 7, "expanded list should grow when the user resizes the panel")
+    try expect(TrafficLightExpandedListLayout.visibleRowCount(sessionCount: 2) == 2, "expanded list should shrink for small lists")
+    try expect(TrafficLightExpandedListLayout.maxScrollOffset(sessionCount: 12, visibleRows: 5, rowHeight: 46) == 322, "pixel scroll offset should allow the list to reach the last row")
+    try expect(TrafficLightExpandedListLayout.clampedScrollOffset(999, sessionCount: 12, visibleRows: 5, rowHeight: 46) == 322, "pixel scroll offset should clamp to the list end")
+    try expect(TrafficLightExpandedListLayout.clampedScrollOffset(-3, sessionCount: 12, visibleRows: 5, rowHeight: 46) == 0, "pixel scroll offset should not go below zero")
+    try expect(TrafficLightExpandedListLayout.visibleRange(sessionCount: 12, visibleRows: 5, scrollOffset: 23, rowHeight: 46) == 0..<6, "partial pixel scroll should render one extra row for smooth clipping")
+    try expect(TrafficLightExpandedListLayout.visibleRange(sessionCount: 12, visibleRows: 5, scrollOffset: 138, rowHeight: 46) == 3..<9, "visible range should follow pixel scroll offset")
+}
+
+func expandedListPreservesScrollAnchorAcrossRefresh() throws {
+    let offset = TrafficLightExpandedListLayout.scrollOffsetPreservingAnchor(
+        oldIDs: ["a", "b", "c", "d", "e"],
+        newIDs: ["x", "a", "b", "c", "d", "e"],
+        currentOffset: 46,
+        visibleRows: 3,
+        rowHeight: 46
+    )
+    try expect(offset == 92, "refresh should keep the same top row visible when new rows are inserted above it")
+
+    let clamped = TrafficLightExpandedListLayout.scrollOffsetPreservingAnchor(
+        oldIDs: ["a", "b", "c", "d"],
+        newIDs: ["a", "b"],
+        currentOffset: 92,
+        visibleRows: 1,
+        rowHeight: 46
+    )
+    try expect(clamped == 46, "preserved scroll anchor should still clamp to the new list end")
+}
+
+func sessionRowLayoutSeparatesStatusAndTime() throws {
+    let row = CGRect(x: 14, y: 12, width: 342, height: 39)
+    try expect(
+        TrafficLightSessionRowLayout.verticalGapBetweenTimeAndStatus(in: row) >= 3,
+        "status pill and relative time should not touch or overlap"
+    )
+}
+
+func sessionRowLayoutExposesSeparateOpenAndStopActions() throws {
+    let row = CGRect(x: 14, y: 12, width: 342, height: 39)
+    let openRect = TrafficLightSessionRowLayout.openButtonRect(in: row)
+    let openVisualRect = TrafficLightSessionRowLayout.openButtonVisualRect(in: row)
+    let stopRect = TrafficLightSessionRowLayout.stopButtonRect(in: row)
+    let stopVisualRect = TrafficLightSessionRowLayout.stopButtonVisualRect(in: row)
+    let statusRect = TrafficLightSessionRowLayout.statusPillRect(in: row)
+
+    try expect(TrafficLightSessionRowLayout.actionFontSize == TrafficLightSessionRowLayout.statusFontSize, "open and kill labels should match the status pill font size")
+    try expect(openRect.width >= 22 && openRect.height >= 22, "open button should keep a usable hit target")
+    try expect(openVisualRect.width == statusRect.width, "open button should match the status pill width")
+    try expect(openVisualRect.minY == statusRect.minY && openVisualRect.height == statusRect.height, "open button visual should align with status on the first row")
+    try expect(openVisualRect.minY >= row.minY + 18, "open button visual should not cover the summary row")
+    try expect(stopRect.width >= 22 && stopRect.height >= 22, "stop button should keep a usable hit target")
+    try expect(stopVisualRect.width == statusRect.width, "kill button should match the status pill width")
+    try expect(stopVisualRect.midY == statusRect.midY, "stop button visual should align vertically with status on the first row")
+    try expect(stopVisualRect.minY >= row.minY + 18, "stop button visual should not cover the summary row")
+    try expect(openRect.maxX < statusRect.minX, "open action should sit to the left of the status pill")
+    try expect(stopRect.maxX < openRect.minX, "stop action should sit to the left of the open action")
+    try expect(row.minX + 40 + TrafficLightSessionRowLayout.contentTextWidth(in: row) < stopRect.minX, "row text should end before stop and open actions")
+    try expect(!openRect.intersects(stopRect), "open and stop buttons should not overlap")
+    try expect(
+        TrafficLightSessionRowLayout.action(at: CGPoint(x: openRect.midX, y: openRect.midY), in: row, canStop: true) == .open,
+        "open button hit should resolve to open action"
+    )
+    try expect(
+        TrafficLightSessionRowLayout.action(at: CGPoint(x: stopRect.midX, y: stopRect.midY), in: row, canStop: true) == .stop,
+        "stop button hit should resolve to stop action"
+    )
+    try expect(
+        TrafficLightSessionRowLayout.action(at: CGPoint(x: stopRect.midX, y: stopRect.midY), in: row, canStop: false) == nil,
+        "stop action should be disabled when no live process id exists"
+    )
+}
+
+func panelResizeRulesUseBottomRightGrip() throws {
+    let bounds = CGRect(x: 0, y: 0, width: 370, height: 244)
+    try expect(
+        TrafficLightPanelInteraction.hitRegion(
+            mode: .expanded,
+            point: CGPoint(x: 4, y: 122),
+            bounds: bounds
+        ) == .resizeLeftEdge,
+        "left edge should start resize"
+    )
+    try expect(
+        TrafficLightPanelInteraction.hitRegion(
+            mode: .expanded,
+            point: CGPoint(x: 366, y: 122),
+            bounds: bounds
+        ) == .resizeRightEdge,
+        "right edge should start resize"
+    )
+    try expect(
+        TrafficLightPanelInteraction.hitRegion(
+            mode: .expanded,
+            point: CGPoint(x: 185, y: 240),
+            bounds: bounds
+        ) == .resizeTopEdge,
+        "top edge should start resize"
+    )
+    try expect(
+        TrafficLightPanelInteraction.hitRegion(
+            mode: .expanded,
+            point: CGPoint(x: 185, y: 4),
+            bounds: bounds
+        ) == .resizeBottomEdge,
+        "bottom edge should start resize"
+    )
+    try expect(
+        TrafficLightPanelInteraction.hitRegion(
+            mode: .expanded,
+            point: CGPoint(x: 4, y: 240),
+            bounds: bounds
+        ) == .resizeTopLeftCorner,
+        "top-left corner should start resize"
+    )
+    try expect(
+        TrafficLightPanelInteraction.hitRegion(
+            mode: .expanded,
+            point: CGPoint(x: 360, y: 8),
+            bounds: bounds
+        ) == .resizeBottomRightCorner,
+        "bottom-right corner should start resize"
+    )
+    try expect(TrafficLightPanelHitRegion.resizeTopEdge.isResizeRegion, "top edge should be a resize region")
+    try expect(TrafficLightPanelHitRegion.resizeBottomRightCorner.resizesRight, "bottom-right should resize the right edge")
+    try expect(TrafficLightPanelHitRegion.resizeBottomRightCorner.resizesBottom, "bottom-right should resize the bottom edge")
+    try expect(
+        !TrafficLightPanelInteraction.canStartDrag(
+            mode: .expanded,
+            point: CGPoint(x: 360, y: 8),
+            bounds: bounds
+        ),
+        "resize handle should not drag the panel"
+    )
+    try expect(
+        TrafficLightPanelResize.clampedSize(
+            CGSize(width: 200, height: 120),
+            minSize: CGSize(width: 380, height: 244),
+            maxSize: CGSize(width: 900, height: 700)
+        ) == CGSize(width: 380, height: 244),
+        "resize should not go below minimum size"
+    )
+    try expect(
+        TrafficLightPanelResize.clampedSize(
+            CGSize(width: 1200, height: 900),
+            minSize: CGSize(width: 380, height: 244),
+            maxSize: CGSize(width: 900, height: 700)
+        ) == CGSize(width: 900, height: 700),
+        "resize should not exceed screen bounds"
+    )
+}
+
+func workspaceWindowMatcherPrefersCodexTerminalThenIDE() throws {
+    let session = AIAgentSession.stub(
+        id: "s1",
+        projectName: "tsailun",
+        status: .working,
+        cwd: "/Users/wuxing/IdeaProjects/tsailun"
+    )
+
+    let terminalMatch = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "Cursor", title: "tsailun - Cursor"),
+            AgentWorkspaceWindowSnapshot(appName: "iTerm2", title: "codex tsailun")
+        ]
+    )
+    try expect(terminalMatch?.kind == .codexTerminal, "codex terminal should be preferred over IDE window")
+    try expect(terminalMatch?.window.appName == "iTerm2", "terminal match should return the terminal window")
+
+    let ideMatch = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "Cursor", title: "tsailun - Cursor"),
+            AgentWorkspaceWindowSnapshot(appName: "Safari", title: "unrelated")
+        ]
+    )
+    try expect(ideMatch?.kind == .ide, "IDE window should be used when no codex terminal window matches")
+    try expect(ideMatch?.window.appName == "Cursor", "IDE match should return the matching editor window")
+
+    let noMatch = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "Safari", title: "unrelated")
+        ]
+    )
+    try expect(noMatch == nil, "unrelated windows should not match a project")
+}
+
+func workspaceWindowMatcherUsesTerminalHintBeforeHomeDirectory() throws {
+    let session = AIAgentSession.stub(
+        id: "s1",
+        projectName: "~",
+        status: .working,
+        cwd: "/Users/wuxing",
+        windowTitleHints: ["12844_1781085992565"]
+    )
+
+    let match = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "Terminal", title: "wuxing — wuxing — codex ◂ node ~/.local/state/fnm_multishells/12534_1781085967351/bin/codex — 120x30"),
+            AgentWorkspaceWindowSnapshot(appName: "Terminal", title: "wuxing — wuxing — codex ◂ node ~/.local/state/fnm_multishells/12844_1781085992565/bin/codex — 120x30")
+        ]
+    )
+    try expect(match?.window.title.contains("12844_1781085992565") == true, "terminal title hint should choose the matching codex terminal")
+
+    let noHintSession = AIAgentSession.stub(
+        id: "s2",
+        projectName: "~",
+        status: .working,
+        cwd: "/Users/wuxing"
+    )
+    let broadHomeMatch = AgentWorkspaceWindowMatcher.bestMatch(
+        for: noHintSession,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "Terminal", title: "wuxing — wuxing — codex")
+        ]
+    )
+    try expect(broadHomeMatch == nil, "home-directory sessions should not match every terminal by username")
+}
+
+func workspaceWindowMatcherSupportsLocalizedTerminalAppName() throws {
+    let session = AIAgentSession.stub(
+        id: "s1",
+        projectName: "~",
+        status: .working,
+        cwd: "/Users/wuxing",
+        windowTitleHints: ["61429_1780995698425"]
+    )
+
+    let match = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "终端", title: "wuxing — ⠼ wuxing — codex ◂ node ~/.local/state/fnm_multishells/61429_1780995698425/bin/codex — 102x43")
+        ]
+    )
+
+    try expect(match?.kind == .codexTerminal, "localized Terminal app names should match Codex terminal title hints")
+}
+
+func workspaceWindowMatcherSupportsJetBrainsAndTrae() throws {
+    let session = AIAgentSession.stub(
+        id: "s1",
+        projectName: "tsailun",
+        status: .working,
+        cwd: "/Users/wuxing/IdeaProjects/tsailun"
+    )
+
+    let jetBrainsMatch = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "IntelliJ IDEA", title: "tsailun - pom.xml")
+        ]
+    )
+    try expect(jetBrainsMatch?.kind == .ide, "JetBrains IDE windows should match by project title")
+
+    let traeMatch = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "TRAE CN", title: "tsailun - TRAE CN")
+        ]
+    )
+    try expect(traeMatch?.kind == .ide, "Trae windows should match by project title")
 }
 
 func expect(_ condition: Bool, _ message: String) throws {
@@ -752,12 +1445,25 @@ func tokenCountLine(
     primaryWindowMinutes: Int = 300,
     primaryResetAt: String = "2026-06-10T05:00:00Z",
     secondaryWindowMinutes: Int = 10080,
-    secondaryResetAt: String = "2026-06-11T00:00:00Z"
+    secondaryResetAt: String = "2026-06-11T00:00:00Z",
+    limitID: String = "codex"
 ) -> String {
     let primaryResetEpoch = Int(date(primaryResetAt).timeIntervalSince1970)
     let secondaryResetEpoch = Int(date(secondaryResetAt).timeIntervalSince1970)
     return """
-    {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":\(totalTokens)}},"rate_limits":{"primary":{"used_percent":\(primaryUsedPercent),"window_minutes":\(primaryWindowMinutes),"resets_at":\(primaryResetEpoch)},"secondary":{"used_percent":\(secondaryUsedPercent),"window_minutes":\(secondaryWindowMinutes),"resets_at":\(secondaryResetEpoch)}}}}
+    {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":\(totalTokens)}},"rate_limits":{"limit_id":"\(limitID)","primary":{"used_percent":\(primaryUsedPercent),"window_minutes":\(primaryWindowMinutes),"resets_at":\(primaryResetEpoch)},"secondary":{"used_percent":\(secondaryUsedPercent),"window_minutes":\(secondaryWindowMinutes),"resets_at":\(secondaryResetEpoch)}}}}
+    """
+}
+
+func apiCreditTokenCountLine(
+    timestamp: String,
+    totalTokens: Int,
+    remainingCredits: Double,
+    totalCredits: Double,
+    currency: String
+) -> String {
+    """
+    {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":\(totalTokens)}},"rate_limits":{"plan_type":"api","credits":{"remaining":\(remainingCredits),"total":\(totalCredits),"currency":"\(currency)"}}}}
     """
 }
 
@@ -777,7 +1483,8 @@ extension AIAgentSession {
         projectName: String,
         status: SessionStatus,
         lastActivity: Date = date("2026-06-09T08:20:00Z"),
-        cwd: String? = nil
+        cwd: String? = nil,
+        windowTitleHints: [String] = []
     ) -> AIAgentSession {
         AIAgentSession(
             id: id,
@@ -788,7 +1495,9 @@ extension AIAgentSession {
             status: status,
             lastActivity: lastActivity,
             pendingToolCalls: status == .working ? 1 : 0,
-            summary: status.label
+        summary: status.label,
+            windowTitleHints: windowTitleHints,
+            codexProcessID: nil
         )
     }
 }

@@ -26,7 +26,12 @@ trap cleanup EXIT
 /bin/mkdir -p "$COMPONENT_ROOT/Applications" "$SCRIPTS_DIR" "$DMG_ROOT"
 /usr/bin/ditto --norsrc "$APP" "$COMPONENT_ROOT/Applications/$APP_NAME.app"
 
-/usr/bin/codesign --force --deep --sign - "$COMPONENT_ROOT/Applications/$APP_NAME.app" >/dev/null
+SIGN_IDENTITY="${MUSHI_SIGNAL_SIGN_IDENTITY:-Mushi Signal Local Code Signing}"
+if /usr/bin/security find-identity -v -p codesigning | /usr/bin/grep -F "\"$SIGN_IDENTITY\"" >/dev/null 2>&1; then
+  /usr/bin/codesign --force --deep --sign "$SIGN_IDENTITY" "$COMPONENT_ROOT/Applications/$APP_NAME.app" >/dev/null
+else
+  /usr/bin/codesign --force --deep --sign - "$COMPONENT_ROOT/Applications/$APP_NAME.app" >/dev/null
+fi
 /usr/bin/xattr -cr "$COMPONENT_ROOT"
 
 /bin/cp "$ROOT/scripts/pkg-postinstall.sh" "$SCRIPTS_DIR/postinstall"

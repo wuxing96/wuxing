@@ -9,8 +9,42 @@ public enum TrafficLightPanelMode: Equatable, Sendable {
 public enum TrafficLightPanelHitRegion: Equatable, Sendable {
     case collapseButton
     case closeButton
+    case resizeTopEdge
+    case resizeBottomEdge
+    case resizeLeftEdge
+    case resizeRightEdge
+    case resizeTopLeftCorner
+    case resizeTopRightCorner
+    case resizeBottomLeftCorner
+    case resizeBottomRightCorner
     case dragHandle
     case content
+
+    public var isResizeRegion: Bool {
+        switch self {
+        case .resizeTopEdge, .resizeBottomEdge, .resizeLeftEdge, .resizeRightEdge,
+             .resizeTopLeftCorner, .resizeTopRightCorner, .resizeBottomLeftCorner, .resizeBottomRightCorner:
+            return true
+        case .collapseButton, .closeButton, .dragHandle, .content:
+            return false
+        }
+    }
+
+    public var resizesTop: Bool {
+        self == .resizeTopEdge || self == .resizeTopLeftCorner || self == .resizeTopRightCorner
+    }
+
+    public var resizesBottom: Bool {
+        self == .resizeBottomEdge || self == .resizeBottomLeftCorner || self == .resizeBottomRightCorner
+    }
+
+    public var resizesLeft: Bool {
+        self == .resizeLeftEdge || self == .resizeTopLeftCorner || self == .resizeBottomLeftCorner
+    }
+
+    public var resizesRight: Bool {
+        self == .resizeRightEdge || self == .resizeTopRightCorner || self == .resizeBottomRightCorner
+    }
 }
 
 public enum TrafficLightPanelClickAction: Equatable, Sendable {
@@ -20,12 +54,19 @@ public enum TrafficLightPanelClickAction: Equatable, Sendable {
     case none
 }
 
+public enum TrafficLightSessionRowAction: Equatable, Sendable {
+    case open
+    case stop
+}
+
 public enum TrafficLightPanelInteraction {
     public static let expandedTitleHeight: CGFloat = 52
-    public static let expandedCloseButtonSize: CGFloat = 24
-    public static let expandedCloseButtonRightMargin: CGFloat = 14
+    public static let expandedCloseButtonSize: CGFloat = 22
+    public static let expandedCloseButtonRightMargin: CGFloat = 16
     public static let expandedCloseButtonTopMargin: CGFloat = 16
-    public static let expandedWindowButtonSpacing: CGFloat = 8
+    public static let expandedWindowButtonSpacing: CGFloat = 2
+    public static let expandedResizeHandleSize: CGFloat = 24
+    public static let expandedResizeEdgeThickness: CGFloat = 8
 
     public static func hitRegion(
         mode: TrafficLightPanelMode,
@@ -41,6 +82,9 @@ public enum TrafficLightPanelInteraction {
             }
             if collapseButtonRect(in: bounds).contains(point) {
                 return .collapseButton
+            }
+            if let resizeRegion = resizeHitRegion(point: point, bounds: bounds) {
+                return resizeRegion
             }
             if point.y >= bounds.maxY - expandedTitleHeight {
                 return .dragHandle
@@ -58,6 +102,9 @@ public enum TrafficLightPanelInteraction {
         case .dragHandle:
             return true
         case .collapseButton, .closeButton, .content:
+            return false
+        case .resizeTopEdge, .resizeBottomEdge, .resizeLeftEdge, .resizeRightEdge,
+             .resizeTopLeftCorner, .resizeTopRightCorner, .resizeBottomLeftCorner, .resizeBottomRightCorner:
             return false
         }
     }
@@ -107,11 +154,303 @@ public enum TrafficLightPanelInteraction {
             height: expandedCloseButtonSize
         )
     }
+
+    public static func resizeHandleRect(in bounds: CGRect) -> CGRect {
+        CGRect(
+            x: bounds.maxX - expandedResizeHandleSize,
+            y: bounds.minY,
+            width: expandedResizeHandleSize,
+            height: expandedResizeHandleSize
+        )
+    }
+
+    private static func resizeHitRegion(point: CGPoint, bounds: CGRect) -> TrafficLightPanelHitRegion? {
+        let thickness = expandedResizeEdgeThickness
+        let cornerSize = expandedResizeHandleSize
+        let isCornerLeft = point.x <= bounds.minX + cornerSize
+        let isCornerRight = point.x >= bounds.maxX - cornerSize
+        let isCornerBottom = point.y <= bounds.minY + cornerSize
+        let isCornerTop = point.y >= bounds.maxY - cornerSize
+
+        switch (isCornerLeft, isCornerRight, isCornerTop, isCornerBottom) {
+        case (true, false, true, false):
+            return .resizeTopLeftCorner
+        case (false, true, true, false):
+            return .resizeTopRightCorner
+        case (true, false, false, true):
+            return .resizeBottomLeftCorner
+        case (false, true, false, true):
+            return .resizeBottomRightCorner
+        default:
+            break
+        }
+
+        let isLeft = point.x <= bounds.minX + thickness
+        let isRight = point.x >= bounds.maxX - thickness
+        let isBottom = point.y <= bounds.minY + thickness
+        let isTop = point.y >= bounds.maxY - thickness
+
+        switch (isLeft, isRight, isTop, isBottom) {
+        case (true, false, false, false):
+            return .resizeLeftEdge
+        case (false, true, false, false):
+            return .resizeRightEdge
+        case (false, false, true, false):
+            return .resizeTopEdge
+        case (false, false, false, true):
+            return .resizeBottomEdge
+        default:
+            return nil
+        }
+    }
 }
 
 public enum TrafficLightRefreshPolicy {
-    public static let statusInterval: TimeInterval = 0.25
+    public static let statusInterval: TimeInterval = 0.05
     public static let tokenUsageInterval: TimeInterval = 30
+}
+
+public enum TrafficLightWindowControlStyle {
+    public static let visualDiameter: CGFloat = 12
+}
+
+public enum TrafficLightExpandedHeader {
+    public static let title = "AI SESSIONS"
+    public static let titleFontSize: CGFloat = 16
+    public static let titleLineHeight: CGFloat = 22
+    public static let countFontSize: CGFloat = titleFontSize
+    public static let iconHeight: CGFloat = titleLineHeight
+    public static let iconAssetName = "mushi-status-header"
+
+    public static func countText(sessionCount: Int) -> String {
+        "\(sessionCount)"
+    }
+}
+
+public enum TrafficLightCollapsedStatusLayout {
+    public static let statuses: [SessionStatus] = [.working, .waiting, .completed]
+    public static let iconSize: CGFloat = 25
+    public static let iconSpacing: CGFloat = 6
+    public static let leadingInset: CGFloat = 8
+    public static let countBadgeSize: CGFloat = 13
+
+    public static func iconRect(index: Int, in bounds: CGRect) -> CGRect {
+        CGRect(
+            x: bounds.minX + leadingInset + CGFloat(index) * (iconSize + iconSpacing),
+            y: bounds.midY - iconSize / 2,
+            width: iconSize,
+            height: iconSize
+        )
+    }
+
+    public static func countBadgeRect(for iconRect: CGRect) -> CGRect {
+        CGRect(
+            x: iconRect.maxX - countBadgeSize + 1,
+            y: iconRect.minY - 1,
+            width: countBadgeSize,
+            height: countBadgeSize
+        )
+    }
+
+    public static func assetName(for status: SessionStatus, count: Int) -> String {
+        guard count > 0 else {
+            return "mushi-status-idle"
+        }
+        switch status {
+        case .working:
+            return "mushi-status-working"
+        case .waiting:
+            return "mushi-status-waiting"
+        case .completed:
+            return "mushi-status-done"
+        case .inactive:
+            return "mushi-status-idle"
+        }
+    }
+}
+
+public enum TrafficLightExpandedListLayout {
+    public static let defaultVisibleRows = 3
+
+    public static func visibleRowCount(sessionCount: Int) -> Int {
+        visibleRowCount(sessionCount: sessionCount, preferredVisibleRows: defaultVisibleRows)
+    }
+
+    public static func visibleRowCount(sessionCount: Int, preferredVisibleRows: Int) -> Int {
+        max(1, min(sessionCount, max(1, preferredVisibleRows)))
+    }
+
+    public static func maxScrollOffset(
+        sessionCount: Int,
+        visibleRows: Int,
+        rowHeight: CGFloat
+    ) -> CGFloat {
+        CGFloat(max(0, sessionCount - visibleRows)) * rowHeight
+    }
+
+    public static func clampedScrollOffset(
+        _ offset: CGFloat,
+        sessionCount: Int,
+        visibleRows: Int,
+        rowHeight: CGFloat
+    ) -> CGFloat {
+        max(0, min(offset, maxScrollOffset(sessionCount: sessionCount, visibleRows: visibleRows, rowHeight: rowHeight)))
+    }
+
+    public static func visibleRange(
+        sessionCount: Int,
+        visibleRows: Int,
+        scrollOffset: CGFloat,
+        rowHeight: CGFloat
+    ) -> Range<Int> {
+        guard sessionCount > 0, visibleRows > 0, rowHeight > 0 else {
+            return 0..<0
+        }
+        let clampedOffset = clampedScrollOffset(
+            scrollOffset,
+            sessionCount: sessionCount,
+            visibleRows: visibleRows,
+            rowHeight: rowHeight
+        )
+        let start = min(sessionCount, max(0, Int(floor(clampedOffset / rowHeight))))
+        return start..<min(sessionCount, start + visibleRows + 1)
+    }
+
+    public static func scrollOffsetPreservingAnchor<ID: Equatable>(
+        oldIDs: [ID],
+        newIDs: [ID],
+        currentOffset: CGFloat,
+        visibleRows: Int,
+        rowHeight: CGFloat
+    ) -> CGFloat {
+        guard !oldIDs.isEmpty, !newIDs.isEmpty, rowHeight > 0 else {
+            return 0
+        }
+
+        let oldOffset = clampedScrollOffset(
+            currentOffset,
+            sessionCount: oldIDs.count,
+            visibleRows: visibleRows,
+            rowHeight: rowHeight
+        )
+        let anchorIndex = min(oldIDs.count - 1, max(0, Int(floor(oldOffset / rowHeight))))
+        let anchorID = oldIDs[anchorIndex]
+        let intraRowOffset = oldOffset - CGFloat(anchorIndex) * rowHeight
+        let proposedOffset: CGFloat
+        if let newIndex = newIDs.firstIndex(of: anchorID) {
+            proposedOffset = CGFloat(newIndex) * rowHeight + intraRowOffset
+        } else {
+            proposedOffset = oldOffset
+        }
+
+        return clampedScrollOffset(
+            proposedOffset,
+            sessionCount: newIDs.count,
+            visibleRows: visibleRows,
+            rowHeight: rowHeight
+        )
+    }
+}
+
+public enum TrafficLightPanelResize {
+    public static func clampedSize(
+        _ size: CGSize,
+        minSize: CGSize,
+        maxSize: CGSize
+    ) -> CGSize {
+        CGSize(
+            width: min(max(size.width, minSize.width), maxSize.width),
+            height: min(max(size.height, minSize.height), maxSize.height)
+        )
+    }
+}
+
+public enum TrafficLightSessionRowLayout {
+    public static let actionButtonSize: CGFloat = 22
+    public static let statusWidth: CGFloat = 56
+    public static let statusFontSize: CGFloat = 10.5
+    public static let actionFontSize: CGFloat = statusFontSize
+    public static let openButtonWidth: CGFloat = statusWidth
+    public static let stopButtonWidth: CGFloat = statusWidth
+    public static let actionButtonSpacing: CGFloat = 5
+    public static let actionTrailingInset: CGFloat = 8
+
+    public static func statusPillRect(in row: CGRect) -> CGRect {
+        CGRect(
+            x: row.maxX - actionTrailingInset - statusWidth,
+            y: row.maxY - 19,
+            width: statusWidth,
+            height: 15
+        )
+    }
+
+    public static func relativeTimeRect(in row: CGRect) -> CGRect {
+        let statusRect = statusPillRect(in: row)
+        return CGRect(
+            x: statusRect.minX,
+            y: row.minY + 5,
+            width: statusRect.width,
+            height: 12
+        )
+    }
+
+    public static func openButtonRect(in row: CGRect) -> CGRect {
+        let statusRect = statusPillRect(in: row)
+        return CGRect(
+            x: statusRect.minX - actionButtonSpacing - openButtonWidth,
+            y: statusRect.midY - actionButtonSize / 2,
+            width: openButtonWidth,
+            height: actionButtonSize
+        )
+    }
+
+    public static func openButtonVisualRect(in row: CGRect) -> CGRect {
+        let statusRect = statusPillRect(in: row)
+        return CGRect(
+            x: statusRect.minX - actionButtonSpacing - openButtonWidth,
+            y: statusRect.minY,
+            width: openButtonWidth,
+            height: statusRect.height
+        )
+    }
+
+    public static func stopButtonRect(in row: CGRect) -> CGRect {
+        let openRect = openButtonRect(in: row)
+        return CGRect(
+            x: openRect.minX - actionButtonSpacing - stopButtonWidth,
+            y: openRect.minY,
+            width: stopButtonWidth,
+            height: actionButtonSize
+        )
+    }
+
+    public static func stopButtonVisualRect(in row: CGRect) -> CGRect {
+        let openVisualRect = openButtonVisualRect(in: row)
+        return CGRect(
+            x: openVisualRect.minX - actionButtonSpacing - stopButtonWidth,
+            y: openVisualRect.minY,
+            width: stopButtonWidth,
+            height: openVisualRect.height
+        )
+    }
+
+    public static func contentTextWidth(in row: CGRect) -> CGFloat {
+        max(24, stopButtonRect(in: row).minX - row.minX - 46)
+    }
+
+    public static func action(at point: CGPoint, in row: CGRect, canStop: Bool) -> TrafficLightSessionRowAction? {
+        if openButtonRect(in: row).contains(point) {
+            return .open
+        }
+        if canStop, stopButtonRect(in: row).contains(point) {
+            return .stop
+        }
+        return nil
+    }
+
+    public static func verticalGapBetweenTimeAndStatus(in row: CGRect) -> CGFloat {
+        statusPillRect(in: row).minY - relativeTimeRect(in: row).maxY
+    }
 }
 
 public enum TrafficLightProduct {
@@ -123,7 +462,7 @@ public enum AgentSource: String, Codable, Equatable {
     case claude = "Claude"
 }
 
-public enum SessionStatus: String, Codable, Equatable, Hashable, Comparable {
+public enum SessionStatus: String, Codable, Equatable, Hashable, Comparable, Sendable {
     case inactive
     case completed
     case working
@@ -138,7 +477,7 @@ public enum SessionStatus: String, Codable, Equatable, Hashable, Comparable {
         case .working:
             return "Working"
         case .waiting:
-            return "Needs you"
+            return "Waiting"
         }
     }
 
@@ -170,6 +509,8 @@ public struct AIAgentSession: Equatable, Identifiable {
     public let lastActivity: Date
     public let pendingToolCalls: Int
     public let summary: String
+    public var windowTitleHints: [String]
+    public var codexProcessID: Int?
 
     public init(
         id: String,
@@ -180,7 +521,9 @@ public struct AIAgentSession: Equatable, Identifiable {
         status: SessionStatus,
         lastActivity: Date,
         pendingToolCalls: Int,
-        summary: String
+        summary: String,
+        windowTitleHints: [String] = [],
+        codexProcessID: Int? = nil
     ) {
         self.id = id
         self.source = source
@@ -191,6 +534,136 @@ public struct AIAgentSession: Equatable, Identifiable {
         self.lastActivity = lastActivity
         self.pendingToolCalls = pendingToolCalls
         self.summary = summary
+        self.windowTitleHints = windowTitleHints
+        self.codexProcessID = codexProcessID
+    }
+}
+
+public enum AgentWorkspaceWindowKind: Equatable, Sendable {
+    case codexTerminal
+    case ide
+}
+
+public struct AgentWorkspaceWindowSnapshot: Equatable, Sendable {
+    public let appName: String
+    public let title: String
+
+    public init(appName: String, title: String) {
+        self.appName = appName
+        self.title = title
+    }
+}
+
+public struct AgentWorkspaceWindowMatch: Equatable, Sendable {
+    public let kind: AgentWorkspaceWindowKind
+    public let window: AgentWorkspaceWindowSnapshot
+
+    public init(kind: AgentWorkspaceWindowKind, window: AgentWorkspaceWindowSnapshot) {
+        self.kind = kind
+        self.window = window
+    }
+}
+
+public struct RunningCodexProcess: Equatable, Sendable {
+    public let pid: Int
+    public let cwd: String
+    public let windowTitleHints: [String]
+
+    public init(pid: Int, cwd: String, windowTitleHints: [String] = []) {
+        self.pid = pid
+        self.cwd = cwd
+        self.windowTitleHints = windowTitleHints
+    }
+}
+
+public enum AgentWorkspaceWindowMatcher {
+    private static let terminalAppNames = [
+        "terminal",
+        "iterm",
+        "iterm2",
+        "warp",
+        "ghostty",
+        "kitty",
+        "alacritty",
+        "终端"
+    ]
+    private static let ideAppNames = [
+        "cursor",
+        "visual studio code",
+        "code",
+        "windsurf",
+        "intellij idea",
+        "pycharm",
+        "webstorm",
+        "datagrip",
+        "trae",
+        "trae cn"
+    ]
+
+    public static func bestMatch(
+        for session: AIAgentSession,
+        windows: [AgentWorkspaceWindowSnapshot]
+    ) -> AgentWorkspaceWindowMatch? {
+        let windowTitleHints = session.windowTitleHints
+            .map(normalized)
+            .filter { !$0.isEmpty }
+        if let terminal = windows.first(where: { isTerminalWindow($0) && titleMatches($0.title, keywords: windowTitleHints) }) {
+            return AgentWorkspaceWindowMatch(kind: .codexTerminal, window: terminal)
+        }
+
+        let projectKeywords = keywords(for: session)
+        guard !projectKeywords.isEmpty else {
+            return nil
+        }
+
+        if let terminal = windows.first(where: { isTerminalWindow($0) && titleMatches($0.title, keywords: projectKeywords) }) {
+            return AgentWorkspaceWindowMatch(kind: .codexTerminal, window: terminal)
+        }
+        if let ide = windows.first(where: { isIDEWindow($0) && titleMatches($0.title, keywords: projectKeywords) }) {
+            return AgentWorkspaceWindowMatch(kind: .ide, window: ide)
+        }
+        return nil
+    }
+
+    private static func isTerminalWindow(_ window: AgentWorkspaceWindowSnapshot) -> Bool {
+        let app = normalized(window.appName)
+        return terminalAppNames.contains { app.contains($0) }
+    }
+
+    private static func isIDEWindow(_ window: AgentWorkspaceWindowSnapshot) -> Bool {
+        let app = normalized(window.appName)
+        return ideAppNames.contains { app == $0 || app.contains($0) }
+    }
+
+    private static func titleMatches(_ title: String, keywords: [String]) -> Bool {
+        let normalizedTitle = normalized(title)
+        return keywords.contains { normalizedTitle.contains($0) }
+    }
+
+    private static func keywords(for session: AIAgentSession) -> [String] {
+        var result: [String] = []
+        let normalizedCWD = RunningCodexProcesses.normalizedPath(session.cwd)
+        let isHomeDirectorySession = normalizedCWD == RunningCodexProcesses.normalizedPath(NSHomeDirectory())
+        var values = [
+            session.projectName,
+            session.displayName.components(separatedBy: " #").first ?? session.displayName
+        ]
+        if !isHomeDirectorySession {
+            values.append(URL(fileURLWithPath: normalizedCWD).lastPathComponent)
+            values.append(normalizedCWD)
+        }
+
+        for value in values {
+            let keyword = normalized(value)
+            if keyword.count >= 2, !result.contains(keyword) {
+                result.append(keyword)
+            }
+        }
+        return result
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 
@@ -210,6 +683,7 @@ public struct TokenUsageSummary: Equatable, Sendable {
     public static let empty = TokenUsageSummary(
         totalTokens: 0,
         todayTokens: 0,
+        creditBalance: nil,
         totalUsedPercent: nil,
         todayUsedPercent: nil,
         primaryUsedPercent: nil,
@@ -221,6 +695,7 @@ public struct TokenUsageSummary: Equatable, Sendable {
 
     public let totalTokens: Int
     public let todayTokens: Int
+    public let creditBalance: TokenCreditBalance?
     public let totalUsedPercent: Double?
     public let todayUsedPercent: Double?
     public let primaryUsedPercent: Double?
@@ -232,6 +707,7 @@ public struct TokenUsageSummary: Equatable, Sendable {
     public init(
         totalTokens: Int,
         todayTokens: Int,
+        creditBalance: TokenCreditBalance? = nil,
         totalUsedPercent: Double? = nil,
         todayUsedPercent: Double?,
         primaryUsedPercent: Double?,
@@ -242,6 +718,7 @@ public struct TokenUsageSummary: Equatable, Sendable {
     ) {
         self.totalTokens = totalTokens
         self.todayTokens = todayTokens
+        self.creditBalance = creditBalance
         self.totalUsedPercent = totalUsedPercent ?? secondaryUsedPercent ?? primaryUsedPercent
         self.todayUsedPercent = todayUsedPercent
         self.primaryUsedPercent = primaryUsedPercent
@@ -253,6 +730,130 @@ public struct TokenUsageSummary: Equatable, Sendable {
 
     public var primaryRemainingPercent: Double? {
         primaryUsedPercent.map { min(100, max(0, 100 - $0)) }
+    }
+
+    public var secondaryRemainingPercent: Double? {
+        secondaryUsedPercent.map { min(100, max(0, 100 - $0)) }
+    }
+
+    public var totalRemainingPercent: Double? {
+        (secondaryUsedPercent ?? primaryUsedPercent).map { min(100, max(0, 100 - $0)) }
+    }
+}
+
+public struct TokenCreditBalance: Equatable, Sendable {
+    public let remaining: Double
+    public let total: Double?
+    public let currency: String?
+
+    public init(remaining: Double, total: Double? = nil, currency: String? = nil) {
+        self.remaining = remaining
+        self.total = total
+        self.currency = currency
+    }
+}
+
+public struct TokenMetricDisplay: Equatable, Sendable {
+    public let label: String
+    public let primary: String
+    public let secondary: String?
+
+    public init(label: String, primary: String, secondary: String? = nil) {
+        self.label = label
+        self.primary = primary
+        self.secondary = secondary
+    }
+}
+
+public enum TrafficLightTokenDisplay {
+    public static func weekly(_ usage: TokenUsageSummary) -> TokenMetricDisplay {
+        if let remaining = usage.totalRemainingPercent {
+            return TokenMetricDisplay(
+                label: "Weekly quota",
+                primary: "\(percentText(remaining)) left"
+            )
+        }
+        if let creditBalance = usage.creditBalance {
+            return TokenMetricDisplay(
+                label: "API balance",
+                primary: "\(formatCredits(creditBalance.remaining, currency: creditBalance.currency)) left"
+            )
+        }
+        return TokenMetricDisplay(label: "Total remaining", primary: "--")
+    }
+
+    public static func today(_ usage: TokenUsageSummary) -> TokenMetricDisplay {
+        if let todayUsedPercent = usage.todayUsedPercent {
+            return TokenMetricDisplay(
+                label: "Today usage",
+                primary: "\(percentText(todayUsedPercent)) used",
+                secondary: formatTokens(usage.todayTokens, includeUnit: true)
+            )
+        }
+        guard usage.updatedAt != nil else {
+            return TokenMetricDisplay(label: "Today usage", primary: "--")
+        }
+        return TokenMetricDisplay(
+            label: "Today usage",
+            primary: formatTokens(usage.todayTokens, includeUnit: true)
+        )
+    }
+
+    public static func compactWeekly(_ usage: TokenUsageSummary) -> String {
+        if let remaining = usage.totalRemainingPercent {
+            return "Week \(percentText(remaining)) left"
+        }
+        if let creditBalance = usage.creditBalance {
+            return "API \(formatCredits(creditBalance.remaining, currency: creditBalance.currency)) left"
+        }
+        return "Balance --"
+    }
+
+    public static func compactToday(_ usage: TokenUsageSummary) -> String {
+        if let todayUsedPercent = usage.todayUsedPercent {
+            return "Today \(percentText(todayUsedPercent)) used"
+        }
+        guard usage.updatedAt != nil else {
+            return "Today --"
+        }
+        return "Today \(formatTokens(usage.todayTokens, includeUnit: false)) tok"
+    }
+
+    private static func percentText(_ percent: Double) -> String {
+        if percent >= 10 {
+            return "\(Int(percent.rounded()))%"
+        }
+        return String(format: "%.1f%%", percent)
+    }
+
+    private static func formatTokens(_ tokens: Int, includeUnit: Bool) -> String {
+        let suffix = includeUnit ? " tok" : ""
+        if tokens >= 1_000_000 {
+            let millions = Double(tokens) / 1_000_000
+            let value = millions >= 10 ? String(format: "%.0fM", millions) : String(format: "%.1fM", millions)
+            return value + suffix
+        }
+        if tokens >= 1_000 {
+            let thousands = Double(tokens) / 1_000
+            let value = thousands >= 10 ? String(format: "%.0fK", thousands) : String(format: "%.1fK", thousands)
+            return value + suffix
+        }
+        return "\(tokens)" + suffix
+    }
+
+    private static func formatCredits(_ amount: Double, currency: String?) -> String {
+        let value = String(format: "%.2f", amount)
+        guard let currency, !currency.isEmpty else {
+            return value
+        }
+        switch currency.uppercased() {
+        case "USD", "$":
+            return "$\(value)"
+        case "CNY", "RMB", "¥":
+            return "¥\(value)"
+        default:
+            return "\(value) \(currency.uppercased())"
+        }
     }
 }
 
@@ -300,13 +901,16 @@ public enum CodexTokenUsageParser {
     ) -> TokenUsageSummary {
         var todayTokens = 0
         var tokenEvents: [TokenEvent] = []
-        var latestTimestamp: Date?
+        var latestTokenTimestamp: Date?
+        var latestQuotaTimestamp: Date?
+        var latestCreditTimestamp: Date?
         var latestPrimaryUsedPercent: Double?
         var latestPrimaryResetAt: Date?
         var latestPrimaryWindowMinutes: Double?
         var latestSecondaryUsedPercent: Double?
         var latestSecondaryResetAt: Date?
         var latestSecondaryWindowMinutes: Double?
+        var latestCreditBalance: TokenCreditBalance?
 
         for line in lines where !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let event = parseJSONLine(line),
@@ -327,21 +931,45 @@ public enum CodexTokenUsageParser {
                 }
             }
 
-            guard latestTimestamp == nil || timestamp >= latestTimestamp! else {
-                continue
-            }
-
             let rateLimits = payload["rate_limits"] as? [String: Any]
             let primary = rateLimits?["primary"] as? [String: Any]
             let secondary = rateLimits?["secondary"] as? [String: Any]
 
-            latestTimestamp = timestamp
-            latestPrimaryUsedPercent = doubleValue(primary?["used_percent"])
-            latestPrimaryResetAt = unixDate(primary?["resets_at"])
-            latestPrimaryWindowMinutes = doubleValue(primary?["window_minutes"])
-            latestSecondaryUsedPercent = doubleValue(secondary?["used_percent"])
-            latestSecondaryResetAt = unixDate(secondary?["resets_at"])
-            latestSecondaryWindowMinutes = doubleValue(secondary?["window_minutes"])
+            if latestTokenTimestamp == nil || timestamp >= latestTokenTimestamp! {
+                latestTokenTimestamp = timestamp
+            }
+
+            if shouldUseRateLimitForQuota(rateLimits: rateLimits, primary: primary, secondary: secondary, now: now),
+               latestQuotaTimestamp == nil || timestamp >= latestQuotaTimestamp! {
+                latestQuotaTimestamp = timestamp
+                latestPrimaryUsedPercent = doubleValue(primary?["used_percent"])
+                latestPrimaryResetAt = unixDate(primary?["resets_at"])
+                latestPrimaryWindowMinutes = doubleValue(primary?["window_minutes"])
+                latestSecondaryUsedPercent = doubleValue(secondary?["used_percent"])
+                latestSecondaryResetAt = unixDate(secondary?["resets_at"])
+                latestSecondaryWindowMinutes = doubleValue(secondary?["window_minutes"])
+            }
+
+            if let creditBalance = creditBalance(from: rateLimits?["credits"]),
+               latestCreditTimestamp == nil || timestamp >= latestCreditTimestamp! {
+                latestCreditTimestamp = timestamp
+                latestCreditBalance = creditBalance
+            }
+        }
+
+        let useAPIBilling = latestCreditBalance != nil
+            && latestCreditTimestamp.map { creditTimestamp in
+                latestQuotaTimestamp == nil || creditTimestamp >= latestQuotaTimestamp!
+            } == true
+        if useAPIBilling {
+            latestPrimaryUsedPercent = nil
+            latestPrimaryResetAt = nil
+            latestPrimaryWindowMinutes = nil
+            latestSecondaryUsedPercent = nil
+            latestSecondaryResetAt = nil
+            latestSecondaryWindowMinutes = nil
+        } else {
+            latestCreditBalance = nil
         }
 
         let limitWindowTokens = currentLimitWindowTokens(
@@ -351,11 +979,7 @@ public enum CodexTokenUsageParser {
             windowMinutes: latestSecondaryWindowMinutes ?? latestPrimaryWindowMinutes
         )
         let weekTokens = currentWeekTokens(from: tokenEvents, now: now, calendar: calendar)
-        let totalUsedPercent = estimatedUsagePercent(
-            tokens: weekTokens,
-            totalTokens: limitWindowTokens,
-            totalUsedPercent: latestSecondaryUsedPercent ?? latestPrimaryUsedPercent
-        )
+        let totalUsedPercent = latestSecondaryUsedPercent ?? latestPrimaryUsedPercent
         let todayUsedPercent = estimatedUsagePercent(
             tokens: todayTokens,
             totalTokens: limitWindowTokens,
@@ -365,13 +989,14 @@ public enum CodexTokenUsageParser {
         return TokenUsageSummary(
             totalTokens: weekTokens,
             todayTokens: todayTokens,
+            creditBalance: latestCreditBalance,
             totalUsedPercent: totalUsedPercent,
             todayUsedPercent: todayUsedPercent,
             primaryUsedPercent: latestPrimaryUsedPercent,
             primaryResetAt: latestPrimaryResetAt,
             secondaryUsedPercent: latestSecondaryUsedPercent,
             secondaryResetAt: latestSecondaryResetAt,
-            updatedAt: latestTimestamp
+            updatedAt: latestTokenTimestamp
         )
     }
 
@@ -411,6 +1036,87 @@ public enum CodexTokenUsageParser {
 
     private static func unixDate(_ value: Any?) -> Date? {
         doubleValue(value).map { Date(timeIntervalSince1970: $0) }
+    }
+
+    private static func shouldUseRateLimitForQuota(
+        rateLimits: [String: Any]?,
+        primary: [String: Any]?,
+        secondary: [String: Any]?,
+        now: Date
+    ) -> Bool {
+        guard primary != nil || secondary != nil else {
+            return false
+        }
+
+        let primaryResetAt = unixDate(primary?["resets_at"])
+        let secondaryResetAt = unixDate(secondary?["resets_at"])
+        guard primaryResetAt.map({ $0 > now }) == true || secondaryResetAt.map({ $0 > now }) == true else {
+            return false
+        }
+
+        if let limitID = rateLimits?["limit_id"] as? String,
+           limitID != "codex" {
+            return false
+        }
+
+        return true
+    }
+
+    private static func creditBalance(from value: Any?) -> TokenCreditBalance? {
+        guard let dictionary = value as? [String: Any] else {
+            return nil
+        }
+        let total = firstDouble(
+            in: dictionary,
+            keys: ["total", "limit", "granted", "total_credits", "credit_limit", "initial"]
+        )
+        let used = firstDouble(
+            in: dictionary,
+            keys: ["used", "consumed", "spent", "used_credits", "amount_used"]
+        )
+        let usedPercent = firstDouble(
+            in: dictionary,
+            keys: ["used_percent", "usage_percent", "percent_used"]
+        )
+        let remaining = firstDouble(
+            in: dictionary,
+            keys: ["remaining", "balance", "available", "total_remaining", "remaining_credits", "amount_remaining"]
+        ) ?? total.flatMap { total in
+            if let used {
+                return max(0, total - used)
+            }
+            if let usedPercent {
+                return max(0, total * (100 - usedPercent) / 100)
+            }
+            return nil
+        }
+
+        guard let remaining else {
+            return nil
+        }
+        return TokenCreditBalance(
+            remaining: remaining,
+            total: total,
+            currency: firstString(in: dictionary, keys: ["currency", "unit"])
+        )
+    }
+
+    private static func firstDouble(in dictionary: [String: Any], keys: [String]) -> Double? {
+        for key in keys {
+            if let value = doubleValue(dictionary[key]) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func firstString(in dictionary: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = dictionary[key] as? String, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func currentLimitWindowTokens(
@@ -463,6 +1169,148 @@ public enum CodexTokenUsageParser {
 
         let estimatedLimitTokens = Double(totalTokens) / (totalUsedPercent / 100)
         return Double(tokens) / estimatedLimitTokens * 100
+    }
+}
+
+public enum CodexSessionFileReader {
+    public static let defaultHeadByteLimit = 16 * 1_024
+    public static let defaultTailByteLimit = 256 * 1_024
+
+    public static func statusLines(
+        fileURL: URL,
+        headByteLimit: Int = defaultHeadByteLimit,
+        tailByteLimit: Int = defaultTailByteLimit
+    ) -> [String] {
+        guard let fileSize = size(of: fileURL), fileSize > 0 else {
+            return []
+        }
+
+        let fullReadLimit = max(0, headByteLimit) + max(0, tailByteLimit)
+        if fileSize <= UInt64(fullReadLimit),
+           let contents = try? String(contentsOf: fileURL, encoding: .utf8) {
+            return splitLines(contents)
+        }
+
+        let headLines = readLines(
+            fileURL: fileURL,
+            offset: 0,
+            length: min(max(0, headByteLimit), Int(fileSize)),
+            droppingLeadingPartial: false,
+            droppingTrailingPartial: true
+        )
+        let tailLength = min(max(0, tailByteLimit), Int(fileSize))
+        let tailOffset = max(0, Int(fileSize) - tailLength)
+        let tailLines = readLines(
+            fileURL: fileURL,
+            offset: UInt64(tailOffset),
+            length: tailLength,
+            droppingLeadingPartial: tailOffset > 0,
+            droppingTrailingPartial: false
+        )
+
+        return metadataLines(in: headLines) + tailLines
+    }
+
+    public static func metadataLines(
+        fileURL: URL,
+        headByteLimit: Int = defaultHeadByteLimit
+    ) -> [String] {
+        guard let fileSize = size(of: fileURL), fileSize > 0 else {
+            return []
+        }
+        let headLines = readLines(
+            fileURL: fileURL,
+            offset: 0,
+            length: min(max(0, headByteLimit), Int(fileSize)),
+            droppingLeadingPartial: false,
+            droppingTrailingPartial: true
+        )
+        return metadataLines(in: headLines)
+    }
+
+    public static func cwd(
+        fileURL: URL,
+        headByteLimit: Int = defaultHeadByteLimit
+    ) -> String? {
+        cwd(in: metadataLines(fileURL: fileURL, headByteLimit: headByteLimit))
+    }
+
+    private static func size(of fileURL: URL) -> UInt64? {
+        guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+              let fileSize = values.fileSize else {
+            return nil
+        }
+        return UInt64(fileSize)
+    }
+
+    private static func readLines(
+        fileURL: URL,
+        offset: UInt64,
+        length: Int,
+        droppingLeadingPartial: Bool,
+        droppingTrailingPartial: Bool
+    ) -> [String] {
+        guard length > 0,
+              let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            return []
+        }
+        defer { try? handle.close() }
+
+        do {
+            try handle.seek(toOffset: offset)
+            let data = handle.readData(ofLength: length)
+            guard var text = String(data: data, encoding: .utf8) else {
+                return []
+            }
+
+            if droppingLeadingPartial {
+                guard let newline = text.firstIndex(of: "\n") else {
+                    return []
+                }
+                text = String(text[text.index(after: newline)...])
+            }
+
+            if droppingTrailingPartial, !text.hasSuffix("\n") {
+                guard let newline = text.lastIndex(of: "\n") else {
+                    return []
+                }
+                text = String(text[..<newline])
+            }
+
+            return splitLines(text)
+        } catch {
+            return []
+        }
+    }
+
+    private static func splitLines(_ text: String) -> [String] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private static func metadataLines(in lines: [String]) -> [String] {
+        lines.filter { line in
+            line.contains(#""session_meta""#) || line.contains(#""turn_context""#)
+        }
+    }
+
+    private static func cwd(in lines: [String]) -> String? {
+        var cwd: String?
+        for line in lines {
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            let type = object["type"] as? String
+            let payload = object["payload"] as? [String: Any]
+            if type == "session_meta", let value = payload?["cwd"] as? String {
+                cwd = value
+            } else if type == "turn_context", let value = payload?["cwd"] as? String {
+                cwd = value
+            }
+        }
+        return cwd
     }
 }
 
@@ -624,6 +1472,12 @@ public enum CodexSessionParser {
             case "message":
                 let role = payload?["role"] as? String
                 if role == "user" {
+                    pendingCalls.removeAll()
+                    pendingCallOrder.removeAll()
+                    pendingCallSummaries.removeAll()
+                    pendingApprovalCalls.removeAll()
+                    pendingEditApprovalCalls.removeAll()
+                    waitingForUser = false
                     lastMeaningfulEvent = "user_message"
                     lastMessageSummary = "New request"
                 } else if role == "assistant" {
@@ -694,11 +1548,12 @@ public enum CodexSessionParser {
         now: Date = Date(),
         runningProcessCommands: [String] = []
     ) -> AIAgentSession? {
-        guard let contents = try? String(contentsOf: fileURL, encoding: .utf8) else {
+        let lines = CodexSessionFileReader.statusLines(fileURL: fileURL)
+        guard !lines.isEmpty else {
             return nil
         }
         return try? parse(
-            lines: contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init),
+            lines: lines,
             filePath: fileURL.path,
             now: now,
             runningProcessCommands: runningProcessCommands
@@ -868,9 +1723,62 @@ public enum CodexSessionParser {
     }
 }
 
+private final class CodexSessionStatusCache: @unchecked Sendable {
+    private struct Key: Hashable {
+        let path: String
+        let processFingerprint: Int
+    }
+
+    private struct Entry {
+        let modified: Date
+        let fileSize: Int
+        let session: AIAgentSession
+    }
+
+    private let lock = NSLock()
+    private var entries: [Key: Entry] = [:]
+
+    func session(
+        fileURL: URL,
+        modified: Date,
+        fileSize: Int,
+        now: Date,
+        runningProcessCommands: [String],
+        processFingerprint: Int
+    ) -> AIAgentSession? {
+        let key = Key(path: fileURL.path, processFingerprint: processFingerprint)
+        lock.lock()
+        if let entry = entries[key],
+           entry.modified == modified,
+           entry.fileSize == fileSize {
+            lock.unlock()
+            return entry.session
+        }
+        lock.unlock()
+
+        guard let session = CodexSessionParser.parse(
+            fileURL: fileURL,
+            now: now,
+            runningProcessCommands: runningProcessCommands
+        ) else {
+            return nil
+        }
+
+        lock.lock()
+        entries[key] = Entry(modified: modified, fileSize: fileSize, session: session)
+        if entries.count > 128 {
+            entries.removeAll(keepingCapacity: true)
+            entries[key] = Entry(modified: modified, fileSize: fileSize, session: session)
+        }
+        lock.unlock()
+        return session
+    }
+}
+
 public struct CodexSessionStore: Sendable {
     public let root: URL
     public let recentWindow: TimeInterval
+    private let sessionCache = CodexSessionStatusCache()
 
     public init(
         root: URL = URL(fileURLWithPath: "\(NSHomeDirectory())/.codex/sessions"),
@@ -882,7 +1790,7 @@ public struct CodexSessionStore: Sendable {
 
     public func loadSessions(now: Date = Date()) -> [AIAgentSession] {
         let runningProcessCommands = RunningProcessCommands.snapshot()
-        let activeSessionCountsByCWD = RunningCodexProcesses.activeSessionCounts()
+        let activeSessions = RunningCodexProcesses.activeSessions()
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey],
@@ -891,21 +1799,40 @@ public struct CodexSessionStore: Sendable {
             return []
         }
 
-        var sessions: [AIAgentSession] = []
+        let processFingerprint = RunningProcessCommands.fingerprint(runningProcessCommands)
+        var candidates: [(fileURL: URL, modified: Date, fileSize: Int)] = []
         for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
-            guard let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
+            guard let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
                   let modified = values.contentModificationDate,
-                  now.timeIntervalSince(modified) <= recentWindow,
-                  let session = CodexSessionParser.parse(fileURL: fileURL, now: now, runningProcessCommands: runningProcessCommands),
-                  session.status != .inactive else {
+                  let fileSize = values.fileSize,
+                  now.timeIntervalSince(modified) <= recentWindow else {
                 continue
             }
-            sessions.append(session)
+            candidates.append((fileURL, modified, fileSize))
         }
-        guard let activeSessionCountsByCWD else {
+
+        let sortedCandidates = candidates.sorted { $0.modified > $1.modified }
+
+        let sessions = sortedCandidates.compactMap { candidate -> AIAgentSession? in
+            guard let session = sessionCache.session(
+                fileURL: candidate.fileURL,
+                modified: candidate.modified,
+                fileSize: candidate.fileSize,
+                now: now,
+                runningProcessCommands: runningProcessCommands,
+                processFingerprint: processFingerprint
+            ),
+            session.status != .inactive else {
+                return nil
+            }
+            return session
+        }
+
+        guard let activeSessions else {
             return sessions
         }
-        return Self.filterLiveSessions(sessions, activeSessionCountsByCWD: activeSessionCountsByCWD)
+
+        return Self.filterLiveSessions(sessions, activeSessions: activeSessions)
     }
 
     public static func filterLiveSessions(
@@ -929,6 +1856,34 @@ public struct CodexSessionStore: Sendable {
                 keptCountsByCWD[cwd] = keptCount + 1
                 return true
             }
+    }
+
+    public static func filterLiveSessions(
+        _ sessions: [AIAgentSession],
+        activeSessions: [RunningCodexProcess]
+    ) -> [AIAgentSession] {
+        var activeSessionsByCWD = Dictionary(grouping: activeSessions) { process in
+            RunningCodexProcesses.normalizedPath(process.cwd)
+        }.mapValues { processes in
+            processes.sorted { $0.pid > $1.pid }
+        }
+
+        var result: [AIAgentSession] = []
+        for session in sessions.sorted(by: { $0.lastActivity > $1.lastActivity }) {
+            let cwd = RunningCodexProcesses.normalizedPath(session.cwd)
+            guard var processes = activeSessionsByCWD[cwd],
+                  !processes.isEmpty else {
+                continue
+            }
+
+            let process = processes.removeFirst()
+            activeSessionsByCWD[cwd] = processes
+            var updated = session
+            updated.windowTitleHints = process.windowTitleHints
+            updated.codexProcessID = process.pid
+            result.append(updated)
+        }
+        return result
     }
 
     public func loadTokenUsage(now: Date = Date(), calendar: Calendar = .current) -> TokenUsageSummary {
@@ -962,13 +1917,23 @@ public struct CodexSessionStore: Sendable {
 
 public enum RunningCodexProcesses {
     public static func activeSessionCounts() -> [String: Int]? {
-        guard let psOutput = runProcess(executable: "/bin/ps", arguments: ["-axo", "pid,command"]) else {
+        guard let sessions = activeSessions() else {
+            return nil
+        }
+
+        return sessions.reduce(into: [String: Int]()) { result, session in
+            result[normalizedPath(session.cwd), default: 0] += 1
+        }
+    }
+
+    public static func activeSessions() -> [RunningCodexProcess]? {
+        guard let psOutput = runProcess(executable: "/bin/ps", arguments: ["-axo", "pid,ppid,command"]) else {
             return nil
         }
 
         let pids = nativeCodexPIDs(from: psOutput)
         if pids.isEmpty {
-            return [:]
+            return []
         }
 
         let pidArgument = pids.sorted().map(String.init).joined(separator: ",")
@@ -976,24 +1941,64 @@ public enum RunningCodexProcesses {
             return nil
         }
 
-        return activeSessionCounts(psOutput: psOutput, lsofOutput: lsofOutput)
+        return activeSessions(psOutput: psOutput, lsofOutput: lsofOutput)
     }
 
     public static func activeSessionCounts(psOutput: String, lsofOutput: String) -> [String: Int] {
-        let pids = nativeCodexPIDs(from: psOutput)
-        var counts: [String: Int] = [:]
+        activeSessions(psOutput: psOutput, lsofOutput: lsofOutput).reduce(into: [String: Int]()) { result, session in
+            result[normalizedPath(session.cwd), default: 0] += 1
+        }
+    }
 
+    public static func activeSessions(psOutput: String, lsofOutput: String) -> [RunningCodexProcess] {
+        let records = processRecords(from: psOutput)
+        let recordsByPID = Dictionary(uniqueKeysWithValues: records.map { ($0.pid, $0) })
+        let nativeRecords = Dictionary(uniqueKeysWithValues: records
+            .filter { isNativeCodexCommand($0.command) }
+            .map { ($0.pid, $0) })
+
+        var sessions: [RunningCodexProcess] = []
         for line in lsofOutput.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
             let parts = line.split(maxSplits: 8, whereSeparator: \.isWhitespace).map(String.init)
             guard parts.count >= 9,
                   let pid = Int(parts[1]),
-                  pids.contains(pid) else {
+                  let nativeRecord = nativeRecords[pid] else {
                 continue
             }
-            counts[normalizedPath(parts[8]), default: 0] += 1
+            let parentCommand = nativeRecord.ppid.flatMap { recordsByPID[$0]?.command }
+            sessions.append(RunningCodexProcess(
+                pid: pid,
+                cwd: normalizedPath(parts[8]),
+                windowTitleHints: terminalTitleHints(
+                    nativeCommand: nativeRecord.command,
+                    parentCommand: parentCommand
+                )
+            ))
         }
 
-        return counts
+        return sessions
+    }
+
+    public static func nearestAncestorPID(from pid: Int, candidatePIDs: Set<Int>, psOutput: String) -> Int? {
+        nearestAncestorPID(from: pid, candidatePIDs: Array(candidatePIDs), psOutput: psOutput)
+    }
+
+    public static func nearestAncestorPID(from pid: Int, candidatePIDs: [Int], psOutput: String) -> Int? {
+        let recordsByPID = Dictionary(uniqueKeysWithValues: processRecords(from: psOutput).map { ($0.pid, $0) })
+        let candidates = Set(candidatePIDs)
+        var visited: Set<Int> = []
+        var current = pid
+        while !visited.contains(current) {
+            if candidates.contains(current) {
+                return current
+            }
+            visited.insert(current)
+            guard let parent = recordsByPID[current]?.ppid else {
+                return nil
+            }
+            current = parent
+        }
+        return nil
     }
 
     public static func normalizedPath(_ path: String) -> String {
@@ -1001,22 +2006,36 @@ public enum RunningCodexProcesses {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    private static func nativeCodexPIDs(from psOutput: String) -> Set<Int> {
-        var pids: Set<Int> = []
+    private struct ProcessRecord {
+        let pid: Int
+        let ppid: Int?
+        let command: String
+    }
 
+    private static func nativeCodexPIDs(from psOutput: String) -> Set<Int> {
+        Set(processRecords(from: psOutput)
+            .filter { isNativeCodexCommand($0.command) }
+            .map(\.pid))
+    }
+
+    private static func processRecords(from psOutput: String) -> [ProcessRecord] {
+        var records: [ProcessRecord] = []
         for line in psOutput.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
             let parts = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                .split(maxSplits: 1, whereSeparator: \.isWhitespace)
+                .split(maxSplits: 2, whereSeparator: \.isWhitespace)
                 .map(String.init)
-            guard parts.count == 2,
-                  let pid = Int(parts[0]),
-                  isNativeCodexCommand(parts[1]) else {
+            guard parts.count >= 2,
+                  let pid = Int(parts[0]) else {
                 continue
             }
-            pids.insert(pid)
-        }
 
-        return pids
+            if parts.count >= 3, let ppid = Int(parts[1]) {
+                records.append(ProcessRecord(pid: pid, ppid: ppid, command: parts[2]))
+            } else {
+                records.append(ProcessRecord(pid: pid, ppid: nil, command: parts[1]))
+            }
+        }
+        return records
     }
 
     private static func isNativeCodexCommand(_ command: String) -> Bool {
@@ -1030,6 +2049,31 @@ public enum RunningCodexProcesses {
             return false
         }
         return executable == "codex" || executable.hasSuffix("/bin/codex")
+    }
+
+    private static func terminalTitleHints(nativeCommand: String, parentCommand: String?) -> [String] {
+        var hints: [String] = []
+        for command in [parentCommand, nativeCommand].compactMap({ $0 }) {
+            guard let hint = fnmMultishellID(from: command),
+                  !hints.contains(hint) else {
+                continue
+            }
+            hints.append(hint)
+        }
+        return hints
+    }
+
+    private static func fnmMultishellID(from command: String) -> String? {
+        let marker = "fnm_multishells/"
+        guard let markerRange = command.range(of: marker) else {
+            return nil
+        }
+        let remainder = command[markerRange.upperBound...]
+        guard let first = remainder.split(separator: "/", maxSplits: 1).first,
+              !first.isEmpty else {
+            return nil
+        }
+        return String(first)
     }
 
     private static func runProcess(executable: String, arguments: [String]) -> String? {
@@ -1057,6 +2101,14 @@ public enum RunningCodexProcesses {
 }
 
 public enum RunningProcessCommands {
+    public static func fingerprint(_ commands: [String]) -> Int {
+        var hasher = Hasher()
+        for command in commands.sorted() {
+            hasher.combine(command)
+        }
+        return hasher.finalize()
+    }
+
     public static func snapshot() -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")

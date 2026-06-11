@@ -6,6 +6,7 @@ dist/
 *.dmg
 *.pkg
 *.dSYM/
+current-mushi-*.png
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/

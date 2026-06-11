@@ -6,6 +6,7 @@ OLD_LABEL="com.wuxing.ai-traffic-light"
 APP="/Applications/Mushi Signal.app"
 OLD_APP="/Applications/AITrafficLight.app"
 BINARY="$APP/Contents/MacOS/mushi-signal"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 CONSOLE_USER="$(/usr/bin/stat -f %Su /dev/console 2>/dev/null || true)"
 
 if [ ! -x "$BINARY" ]; then
@@ -34,7 +35,9 @@ OLD_PLIST="$USER_HOME/Library/LaunchAgents/$OLD_LABEL.plist"
   <string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$BINARY</string>
+    <string>/usr/bin/open</string>
+    <string>-g</string>
+    <string>$APP</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -51,9 +54,14 @@ PLIST
 /usr/sbin/chown "$CONSOLE_USER":staff "$PLIST"
 /bin/chmod 644 "$PLIST"
 /usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+if [ -x "$LSREGISTER" ]; then
+  "$LSREGISTER" -f "$APP" 2>/dev/null || true
+fi
 
 /bin/launchctl bootout "gui/$USER_UID" "$OLD_PLIST" 2>/dev/null || true
 /bin/launchctl bootout "gui/$USER_UID" "$PLIST" 2>/dev/null || true
+/usr/bin/pkill -TERM -f "/Mushi Signal.app/Contents/MacOS/mushi-signal" 2>/dev/null || true
+/bin/sleep 0.3
 /bin/rm -f "$OLD_PLIST"
 /bin/rm -rf "$OLD_APP"
 /bin/launchctl bootstrap "gui/$USER_UID" "$PLIST"
