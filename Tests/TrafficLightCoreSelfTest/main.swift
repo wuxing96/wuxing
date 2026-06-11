@@ -28,6 +28,7 @@ try oldSessionIsInactive()
 try userMessageStartsWorkingTurn()
 try userMessageClearsStaleApprovalWait()
 try sessionFileStatusReaderUsesHeadAndTail()
+try sessionFileReaderPreservesOversizedSessionMetaCWD()
 try aggregatorUsesHighestPriorityStatus()
 try aggregatorSortsByAttentionThenRecentActivity()
 try duplicateProjectNamesGetDisplayNumbers()
@@ -511,6 +512,45 @@ func sessionFileStatusReaderUsesHeadAndTail() throws {
     try expect(session.cwd == "/Users/wuxing/IdeaProjects/tsailun", "status reader should preserve cwd from the file head")
     try expect(session.status == .working, "status reader should use the latest tail event")
     try expect(session.summary == "npm run dev", "status reader should preserve the latest command summary")
+}
+
+func sessionFileReaderPreservesOversizedSessionMetaCWD() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("traffic-light-tests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let fileURL = directory.appendingPathComponent("rollout-large-meta.jsonl")
+    let largeInstructions = String(repeating: "x", count: 8_192)
+    let oversizedSessionMeta = """
+    {"timestamp":"2026-06-09T08:20:00.000Z","type":"session_meta","payload":{"id":"large-meta","cwd":"/Users/wuxing/IdeaProjects/tsailun","originator":"codex-tui","base_instructions":{"text":\(jsonString(largeInstructions))}}}
+    """
+    let oldBody = String(repeating: responseReasoning() + "\n", count: 128)
+    let contents = [
+        oversizedSessionMeta,
+        oldBody,
+        userMessage("new work"),
+        responseFunctionCall(
+            name: "exec_command",
+            callID: "call-tail",
+            arguments: #"{"cmd":"mvn test"}"#
+        )
+    ].joined(separator: "\n")
+    try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let lines = CodexSessionFileReader.statusLines(
+        fileURL: fileURL,
+        headByteLimit: 512,
+        tailByteLimit: 2_048
+    )
+    let session = try CodexSessionParser.parse(
+        lines: lines,
+        filePath: fileURL.path,
+        now: date("2026-06-09T08:30:00Z")
+    )
+
+    try expect(lines.count < 40, "oversized metadata reader should still avoid returning the full session body")
+    try expect(session.cwd == "/Users/wuxing/IdeaProjects/tsailun", "status reader should preserve cwd from oversized session metadata")
+    try expect(session.displayName == "tsailun", "display name should use the oversized metadata cwd basename")
 }
 
 func aggregatorUsesHighestPriorityStatus() throws {

@@ -1180,6 +1180,7 @@ public enum CodexTokenUsageParser {
 public enum CodexSessionFileReader {
     public static let defaultHeadByteLimit = 16 * 1_024
     public static let defaultTailByteLimit = 256 * 1_024
+    private static let maximumMetadataLineByteLimit = 2 * 1_024 * 1_024
 
     public static func statusLines(
         fileURL: URL,
@@ -1196,12 +1197,10 @@ public enum CodexSessionFileReader {
             return splitLines(contents)
         }
 
-        let headLines = readLines(
+        let headLines = leadingMetadataLines(
             fileURL: fileURL,
-            offset: 0,
-            length: min(max(0, headByteLimit), Int(fileSize)),
-            droppingLeadingPartial: false,
-            droppingTrailingPartial: true
+            fileSize: fileSize,
+            headByteLimit: headByteLimit
         )
         let tailLength = min(max(0, tailByteLimit), Int(fileSize))
         let tailOffset = max(0, Int(fileSize) - tailLength)
@@ -1213,7 +1212,7 @@ public enum CodexSessionFileReader {
             droppingTrailingPartial: false
         )
 
-        return metadataLines(in: headLines) + tailLines
+        return headLines + tailLines
     }
 
     public static func metadataLines(
@@ -1223,14 +1222,11 @@ public enum CodexSessionFileReader {
         guard let fileSize = size(of: fileURL), fileSize > 0 else {
             return []
         }
-        let headLines = readLines(
+        return leadingMetadataLines(
             fileURL: fileURL,
-            offset: 0,
-            length: min(max(0, headByteLimit), Int(fileSize)),
-            droppingLeadingPartial: false,
-            droppingTrailingPartial: true
+            fileSize: fileSize,
+            headByteLimit: headByteLimit
         )
-        return metadataLines(in: headLines)
     }
 
     public static func cwd(
@@ -1288,6 +1284,58 @@ public enum CodexSessionFileReader {
         }
     }
 
+    private static func leadingMetadataLines(
+        fileURL: URL,
+        fileSize: UInt64,
+        headByteLimit: Int
+    ) -> [String] {
+        let headLines = readLines(
+            fileURL: fileURL,
+            offset: 0,
+            length: min(max(0, headByteLimit), Int(fileSize)),
+            droppingLeadingPartial: false,
+            droppingTrailingPartial: true
+        )
+        let metadata = metadataLines(in: headLines)
+        if !metadata.isEmpty {
+            return metadata
+        }
+        guard let firstLine = firstCompleteLine(fileURL: fileURL),
+              isMetadataLine(firstLine) else {
+            return []
+        }
+        return [firstLine]
+    }
+
+    private static func firstCompleteLine(fileURL: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            return nil
+        }
+        defer { try? handle.close() }
+
+        var data = Data()
+        let chunkSize = 16 * 1_024
+        while data.count < maximumMetadataLineByteLimit {
+            let remaining = maximumMetadataLineByteLimit - data.count
+            let chunk = handle.readData(ofLength: min(chunkSize, remaining))
+            if chunk.isEmpty {
+                break
+            }
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                data.append(chunk[..<newline])
+                break
+            }
+            data.append(chunk)
+        }
+
+        guard !data.isEmpty,
+              let line = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private static func splitLines(_ text: String) -> [String] {
         text.split(separator: "\n", omittingEmptySubsequences: false)
             .map(String.init)
@@ -1295,9 +1343,11 @@ public enum CodexSessionFileReader {
     }
 
     private static func metadataLines(in lines: [String]) -> [String] {
-        lines.filter { line in
-            line.contains(#""session_meta""#) || line.contains(#""turn_context""#)
-        }
+        lines.filter(isMetadataLine)
+    }
+
+    private static func isMetadataLine(_ line: String) -> Bool {
+        line.contains(#""session_meta""#) || line.contains(#""turn_context""#)
     }
 
     private static func cwd(in lines: [String]) -> String? {
