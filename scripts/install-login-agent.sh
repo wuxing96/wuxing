@@ -10,9 +10,7 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 OLD_PLIST="$HOME/Library/LaunchAgents/$OLD_LABEL.plist"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
-if [ ! -x "$BINARY" ]; then
-  "$ROOT/scripts/package-app.sh" >/dev/null
-fi
+"$ROOT/scripts/package-app.sh" >/dev/null
 
 mkdir -p "$HOME/Library/LaunchAgents"
 

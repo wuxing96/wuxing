@@ -37,6 +37,8 @@ try codexProcessSnapshotExtractsTerminalTitleHints()
 try sessionStoreDropsSessionsWithoutLiveCodexProcess()
 try sessionStoreKeepsRecentlyEndedSessionsBriefly()
 try sessionStoreDropsExpiredEndedSessions()
+try sessionStoreShowsInactiveLiveSessionsAsIdle()
+try sessionStoreRecentWindowCoversIdleWorkweek()
 try sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount()
 try sessionStoreAssignsTerminalHintsByCWDRecency()
 try sessionStoreAssignsCodexProcessIDsByCWDRecency()
@@ -685,6 +687,35 @@ func sessionStoreDropsExpiredEndedSessions() throws {
     )
 
     try expect(filtered.map(\.id) == ["live"], "ended sessions should be removed after the short retention window")
+}
+
+func sessionStoreShowsInactiveLiveSessionsAsIdle() throws {
+    let sessions = [
+        AIAgentSession.stub(
+            id: "idle-live",
+            projectName: "tsailun",
+            status: .inactive,
+            lastActivity: date("2026-06-09T00:20:00Z"),
+            cwd: "/Users/wuxing/IdeaProjects/tsailun"
+        )
+    ]
+
+    let filtered = CodexSessionStore.filterLiveSessions(
+        sessions,
+        activeSessions: [
+            RunningCodexProcess(pid: 102, cwd: "/Users/wuxing/IdeaProjects/tsailun")
+        ],
+        now: date("2026-06-09T09:00:00Z")
+    )
+
+    try expect(filtered.map(\.id) == ["idle-live"], "live Codex processes should stay visible even when their transcript is idle")
+    try expect(filtered[0].status == .completed, "idle live sessions should display as green instead of disappearing")
+    try expect(filtered[0].summary == "Idle", "idle live sessions should explain that the process is idle")
+    try expect(filtered[0].codexProcessID == 102, "idle live sessions should keep their live process id")
+}
+
+func sessionStoreRecentWindowCoversIdleWorkweek() throws {
+    try expect(CodexSessionStore.defaultRecentWindow == 7 * 24 * 60 * 60, "session scan window should keep idle live processes visible across multiple days")
 }
 
 func sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount() throws {

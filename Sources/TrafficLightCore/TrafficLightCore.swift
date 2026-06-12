@@ -1831,6 +1831,7 @@ private final class CodexSessionStatusCache: @unchecked Sendable {
 }
 
 public struct CodexSessionStore: Sendable {
+    public static let defaultRecentWindow: TimeInterval = 7 * 24 * 60 * 60
     public static let defaultEndedRetention: TimeInterval = 30 * 60
 
     public let root: URL
@@ -1840,7 +1841,7 @@ public struct CodexSessionStore: Sendable {
 
     public init(
         root: URL = URL(fileURLWithPath: "\(NSHomeDirectory())/.codex/sessions"),
-        recentWindow: TimeInterval = 8 * 60 * 60,
+        recentWindow: TimeInterval = Self.defaultRecentWindow,
         endedRetention: TimeInterval = Self.defaultEndedRetention
     ) {
         self.root = root
@@ -1881,8 +1882,10 @@ public struct CodexSessionStore: Sendable {
                 now: now,
                 runningProcessCommands: runningProcessCommands,
                 processFingerprint: processFingerprint
-            ),
-            session.status != .inactive else {
+            ) else {
+                return nil
+            }
+            if activeSessions == nil && session.status == .inactive {
                 return nil
             }
             return session
@@ -1949,6 +1952,9 @@ public struct CodexSessionStore: Sendable {
             let process = processes.removeFirst()
             activeSessionsByCWD[cwd] = processes
             var updated = session
+            if updated.status == .inactive {
+                updated = idleLiveSession(from: updated)
+            }
             updated.windowTitleHints = process.windowTitleHints
             updated.codexProcessID = process.pid
             result.append(updated)
@@ -1969,6 +1975,22 @@ public struct CodexSessionStore: Sendable {
             summary: "Codex process ended",
             windowTitleHints: [],
             codexProcessID: nil
+        )
+    }
+
+    private static func idleLiveSession(from session: AIAgentSession) -> AIAgentSession {
+        AIAgentSession(
+            id: session.id,
+            source: session.source,
+            projectName: session.projectName,
+            displayName: session.displayName,
+            cwd: session.cwd,
+            status: .completed,
+            lastActivity: session.lastActivity,
+            pendingToolCalls: 0,
+            summary: "Idle",
+            windowTitleHints: session.windowTitleHints,
+            codexProcessID: session.codexProcessID
         )
     }
 
