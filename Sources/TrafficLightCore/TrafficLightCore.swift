@@ -569,6 +569,120 @@ public struct AgentWorkspaceWindowMatch: Equatable, Sendable {
     }
 }
 
+public enum AgentWorkspaceOwnerResolver {
+    public static func ownerPID(
+        forProcessID processID: Int,
+        appPIDs: [Int],
+        psOutput: String
+    ) -> Int? {
+        RunningCodexProcesses.nearestAncestorPID(
+            from: processID,
+            candidatePIDs: appPIDs,
+            psOutput: psOutput
+        )
+    }
+}
+
+public enum AgentWorkspaceTTYResolver {
+    public static func tty(forProcessID processID: Int, psOutput: String) -> String? {
+        for line in psOutput.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            let parts = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(maxSplits: 2, whereSeparator: \.isWhitespace)
+                .map(String.init)
+            guard parts.count >= 2,
+                  Int(parts[0]) == processID else {
+                continue
+            }
+            return normalizedTTY(parts[1])
+        }
+        return nil
+    }
+
+    public static func normalizedTTY(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed != "?",
+              trimmed != "??",
+              trimmed != "-" else {
+            return nil
+        }
+        if trimmed.hasPrefix("/dev/") {
+            return trimmed
+        }
+        return "/dev/\(trimmed)"
+    }
+}
+
+public enum AgentWorkspaceTerminalFocusScript {
+    public static func lines(forTTY tty: String) -> [String] {
+        let escapedTTY = escapedAppleScriptString(tty)
+        return [
+            "set matchedWindowName to missing value",
+            "tell application \"Terminal\"",
+            "repeat with w in windows",
+            "repeat with t in tabs of w",
+            "try",
+            "if (tty of t as string) is \"\(escapedTTY)\" then",
+            "set selected tab of w to t",
+            "set matchedWindowName to name of w",
+            "set index of w to 1",
+            "exit repeat",
+            "end if",
+            "end try",
+            "end repeat",
+            "if matchedWindowName is not missing value then exit repeat",
+            "end repeat",
+            "end tell",
+            "if matchedWindowName is not missing value then",
+            "tell application \"System Events\"",
+            "tell process \"Terminal\"",
+            "set frontmost to true",
+            "repeat with axWindow in windows",
+            "try",
+            "if (name of axWindow as string) is matchedWindowName then",
+            "perform action \"AXRaise\" of axWindow",
+            "exit repeat",
+            "end if",
+            "end try",
+            "end repeat",
+            "end tell",
+            "end tell",
+            "tell application \"Terminal\" to activate",
+            "return \"ok\"",
+            "end if",
+            "return \"missing\""
+        ]
+    }
+
+    private static func escapedAppleScriptString(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+}
+
+public enum ClaudeProcessStatusMapper {
+    public static func sessionStatus(for processStatus: String?) -> SessionStatus? {
+        guard let processStatus else {
+            return nil
+        }
+        let normalized = processStatus
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalized {
+        case "idle":
+            return .completed
+        case "waiting", "pending", "needs-confirm", "needs_confirmation", "requesting":
+            return .waiting
+        case "busy", "running", "working", "processing", "in_progress", "active":
+            return .working
+        default:
+            return nil
+        }
+    }
+}
+
 public struct RunningCodexProcess: Equatable, Sendable {
     public let pid: Int
     public let cwd: String
@@ -578,6 +692,28 @@ public struct RunningCodexProcess: Equatable, Sendable {
         self.pid = pid
         self.cwd = cwd
         self.windowTitleHints = windowTitleHints
+    }
+}
+
+public struct RunningClaudeProcess: Equatable, Sendable {
+    public let pid: Int
+    public let sessionID: String
+    public let cwd: String
+    public let status: String?
+    public let windowTitleHints: [String]
+
+    public init(pid: Int, sessionID: String, cwd: String, status: String?, windowTitleHints: [String] = []) {
+        self.pid = pid
+        self.sessionID = sessionID
+        self.cwd = cwd
+        self.status = status
+        self.windowTitleHints = windowTitleHints.isEmpty
+            ? Self.defaultWindowTitleHints(sessionID: sessionID)
+            : windowTitleHints
+    }
+
+    public static func defaultWindowTitleHints(sessionID: String) -> [String] {
+        [sessionID, "claude code"]
     }
 }
 
@@ -676,11 +812,18 @@ public struct SessionSummary: Equatable {
     public let status: SessionStatus
     public let sessions: [AIAgentSession]
     public let tokenUsage: TokenUsageSummary
+    public let claudeTokenUsage: TokenUsageSummary
 
-    public init(status: SessionStatus, sessions: [AIAgentSession], tokenUsage: TokenUsageSummary = .empty) {
+    public init(
+        status: SessionStatus,
+        sessions: [AIAgentSession],
+        tokenUsage: TokenUsageSummary = .empty,
+        claudeTokenUsage: TokenUsageSummary = .empty
+    ) {
         self.status = status
         self.sessions = sessions
         self.tokenUsage = tokenUsage
+        self.claudeTokenUsage = claudeTokenUsage
     }
 }
 
@@ -758,6 +901,16 @@ public struct TokenCreditBalance: Equatable, Sendable {
     }
 }
 
+public struct AgentTokenUsageSummary: Equatable, Sendable {
+    public let codex: TokenUsageSummary
+    public let claude: TokenUsageSummary
+
+    public init(codex: TokenUsageSummary = .empty, claude: TokenUsageSummary = .empty) {
+        self.codex = codex
+        self.claude = claude
+    }
+}
+
 public struct TokenMetricDisplay: Equatable, Sendable {
     public let label: String
     public let primary: String
@@ -770,48 +923,75 @@ public struct TokenMetricDisplay: Equatable, Sendable {
     }
 }
 
+public struct TokenPanelDisplay: Equatable, Sendable {
+    public let label: String
+    public let primary: String
+    public let secondary: String
+
+    public init(label: String, primary: String, secondary: String) {
+        self.label = label
+        self.primary = primary
+        self.secondary = secondary
+    }
+}
+
 public enum TrafficLightTokenDisplay {
     public static func weekly(_ usage: TokenUsageSummary) -> TokenMetricDisplay {
         if let remaining = usage.totalRemainingPercent {
             return TokenMetricDisplay(
-                label: "Weekly quota",
+                label: "Codex weekly",
                 primary: "\(percentText(remaining)) left"
             )
         }
         if let creditBalance = usage.creditBalance {
             return TokenMetricDisplay(
-                label: "API balance",
+                label: "Codex API",
                 primary: "\(formatCredits(creditBalance.remaining, currency: creditBalance.currency)) left"
             )
         }
-        return TokenMetricDisplay(label: "Total remaining", primary: "--")
+        return TokenMetricDisplay(label: "Codex balance", primary: "--")
     }
 
     public static func today(_ usage: TokenUsageSummary) -> TokenMetricDisplay {
         if let todayUsedPercent = usage.todayUsedPercent {
             return TokenMetricDisplay(
-                label: "Today usage",
+                label: "Codex today",
                 primary: "\(percentText(todayUsedPercent)) used",
                 secondary: formatTokens(usage.todayTokens, includeUnit: true)
             )
         }
         guard usage.updatedAt != nil else {
-            return TokenMetricDisplay(label: "Today usage", primary: "--")
+            return TokenMetricDisplay(label: "Codex today", primary: "--")
         }
         return TokenMetricDisplay(
-            label: "Today usage",
+            label: "Codex today",
+            primary: formatTokens(usage.todayTokens, includeUnit: true)
+        )
+    }
+
+    public static func claudeBalance(_ usage: TokenUsageSummary) -> TokenMetricDisplay {
+        TokenMetricDisplay(
+            label: "Claude balance",
+            primary: "--",
+            secondary: "Week \(formatTokens(usage.totalTokens, includeUnit: true))"
+        )
+    }
+
+    public static func claudeToday(_ usage: TokenUsageSummary) -> TokenMetricDisplay {
+        TokenMetricDisplay(
+            label: "Claude today",
             primary: formatTokens(usage.todayTokens, includeUnit: true)
         )
     }
 
     public static func compactWeekly(_ usage: TokenUsageSummary) -> String {
         if let remaining = usage.totalRemainingPercent {
-            return "Week \(percentText(remaining)) left"
+            return "Codex \(percentText(remaining)) left"
         }
         if let creditBalance = usage.creditBalance {
-            return "API \(formatCredits(creditBalance.remaining, currency: creditBalance.currency)) left"
+            return "Codex \(formatCredits(creditBalance.remaining, currency: creditBalance.currency)) left"
         }
-        return "Balance --"
+        return "Codex --"
     }
 
     public static func compactToday(_ usage: TokenUsageSummary) -> String {
@@ -822,6 +1002,25 @@ public enum TrafficLightTokenDisplay {
             return "Today --"
         }
         return "Today \(formatTokens(usage.todayTokens, includeUnit: false)) tok"
+    }
+
+    public static func compactClaudeToday(_ usage: TokenUsageSummary) -> String {
+        "Claude \(formatTokens(usage.todayTokens, includeUnit: false)) tok"
+    }
+
+    public static func expandedPanels(for summary: SessionSummary) -> [TokenPanelDisplay] {
+        let balance = weekly(summary.tokenUsage)
+        return [
+            TokenPanelDisplay(
+                label: "Codex",
+                primary: balance.primary,
+                secondary: todayLine(from: today(summary.tokenUsage))
+            )
+        ]
+    }
+
+    public static func collapsedLines(for summary: SessionSummary) -> [String] {
+        [compactWeekly(summary.tokenUsage), compactToday(summary.tokenUsage)]
     }
 
     private static func percentText(_ percent: Double) -> String {
@@ -860,10 +1059,22 @@ public enum TrafficLightTokenDisplay {
             return "\(value) \(currency.uppercased())"
         }
     }
+
+    private static func todayLine(from metric: TokenMetricDisplay) -> String {
+        guard let secondary = metric.secondary else {
+            return "Today \(metric.primary)"
+        }
+        return "Today \(metric.primary) · \(secondary)"
+    }
+
 }
 
 public enum SessionAggregator {
-    public static func aggregate(_ sessions: [AIAgentSession], tokenUsage: TokenUsageSummary = .empty) -> SessionSummary {
+    public static func aggregate(
+        _ sessions: [AIAgentSession],
+        tokenUsage: TokenUsageSummary = .empty,
+        claudeTokenUsage: TokenUsageSummary = .empty
+    ) -> SessionSummary {
         var sorted = sessions.sorted { lhs, rhs in
             if lhs.status.sortPriority != rhs.status.sortPriority {
                 return lhs.status.sortPriority > rhs.status.sortPriority
@@ -888,7 +1099,8 @@ public enum SessionAggregator {
         return SessionSummary(
             status: sorted.map(\.status).max() ?? .inactive,
             sessions: sorted,
-            tokenUsage: tokenUsage
+            tokenUsage: tokenUsage,
+            claudeTokenUsage: claudeTokenUsage
         )
     }
 }
@@ -1762,6 +1974,11 @@ public enum CodexSessionParser {
     }
 
     private static func processCommandMatches(_ processCommand: String, command: String) -> Bool {
+        let processCommand = processCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        if processCommand.hasPrefix("Running ") {
+            return false
+        }
+
         let command = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else {
             return false
@@ -1775,6 +1992,303 @@ public enum CodexSessionParser {
             part.contains("/") || part.hasSuffix(".sh") || part.count >= 8
         }
         return usefulParts.contains { processCommand.contains($0) }
+    }
+}
+
+public enum ClaudeSessionParser {
+    public static func parse(
+        lines: [String],
+        filePath: String,
+        now: Date = Date()
+    ) throws -> AIAgentSession {
+        var id = URL(fileURLWithPath: filePath).deletingPathExtension().lastPathComponent
+        var cwd = NSHomeDirectory()
+        var lastActivity = Date(timeIntervalSince1970: 0)
+        var lastMessageSummary = ""
+        var lastMeaningfulEvent = "session"
+        var pendingCalls: Set<String> = []
+        var pendingCallOrder: [String] = []
+        var pendingCallSummaries: [String: String] = [:]
+
+        for line in lines where !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let event = parseJSONLine(line) else {
+                continue
+            }
+            if let timestamp = event["timestamp"] as? String,
+               let parsedDate = ISO8601DateFormatter.codex.date(from: timestamp) {
+                lastActivity = parsedDate
+            }
+            if let sessionID = event["sessionId"] as? String {
+                id = sessionID
+            }
+            if let eventCWD = event["cwd"] as? String {
+                cwd = eventCWD
+            }
+
+            let type = event["type"] as? String
+            guard type == "user" || type == "assistant" else {
+                continue
+            }
+            let message = event["message"] as? [String: Any]
+            let role = message?["role"] as? String
+
+            if role == "user" {
+                if removeToolResults(in: message, from: &pendingCalls, order: &pendingCallOrder, summaries: &pendingCallSummaries) {
+                    lastMeaningfulEvent = "tool_result"
+                    lastMessageSummary = "Tool output"
+                } else {
+                    pendingCalls.removeAll()
+                    pendingCallOrder.removeAll()
+                    pendingCallSummaries.removeAll()
+                    lastMeaningfulEvent = "user_message"
+                    lastMessageSummary = "New request"
+                }
+                continue
+            }
+
+            if role == "assistant" {
+                let toolUses = toolUseSummaries(in: message)
+                if !toolUses.isEmpty {
+                    for toolUse in toolUses {
+                        pendingCalls.insert(toolUse.id)
+                        if !pendingCallOrder.contains(toolUse.id) {
+                            pendingCallOrder.append(toolUse.id)
+                        }
+                        pendingCallSummaries[toolUse.id] = toolUse.name
+                    }
+                    lastMeaningfulEvent = "tool_use"
+                    lastMessageSummary = toolUses.last?.name ?? "Tool use"
+                } else if let text = firstText(in: message) {
+                    pendingCalls.removeAll()
+                    pendingCallOrder.removeAll()
+                    pendingCallSummaries.removeAll()
+                    lastMeaningfulEvent = "assistant_message"
+                    lastMessageSummary = text
+                }
+            }
+        }
+
+        let status = statusFor(
+            lastMeaningfulEvent: lastMeaningfulEvent,
+            pendingCalls: pendingCalls.count,
+            lastActivity: lastActivity,
+            now: now
+        )
+        let summary = status == .working
+            ? pendingCallOrder.compactMap { pendingCallSummaries[$0] }.last ?? lastMessageSummary
+            : (lastMessageSummary.isEmpty ? status.label : lastMessageSummary)
+        let projectName = projectNameFromCWD(cwd)
+
+        return AIAgentSession(
+            id: id,
+            source: .claude,
+            projectName: projectName,
+            displayName: projectName,
+            cwd: cwd,
+            status: status,
+            lastActivity: lastActivity,
+            pendingToolCalls: pendingCalls.count,
+            summary: summary
+        )
+    }
+
+    public static func parse(
+        fileURL: URL,
+        now: Date = Date()
+    ) -> AIAgentSession? {
+        let lines = ClaudeSessionFileReader.statusLines(fileURL: fileURL)
+        guard !lines.isEmpty else {
+            return nil
+        }
+        return try? parse(lines: lines, filePath: fileURL.path, now: now)
+    }
+
+    private struct ToolUseSummary {
+        let id: String
+        let name: String
+    }
+
+    private static func parseJSONLine(_ line: String) -> [String: Any]? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else {
+            return nil
+        }
+        return dictionary
+    }
+
+    private static func removeToolResults(
+        in message: [String: Any]?,
+        from pendingCalls: inout Set<String>,
+        order: inout [String],
+        summaries: inout [String: String]
+    ) -> Bool {
+        guard let content = message?["content"] as? [[String: Any]] else {
+            return false
+        }
+        var removed = false
+        for item in content where item["type"] as? String == "tool_result" {
+            guard let toolUseID = item["tool_use_id"] as? String else {
+                continue
+            }
+            pendingCalls.remove(toolUseID)
+            order.removeAll { $0 == toolUseID }
+            summaries.removeValue(forKey: toolUseID)
+            removed = true
+        }
+        return removed
+    }
+
+    private static func toolUseSummaries(in message: [String: Any]?) -> [ToolUseSummary] {
+        guard let content = message?["content"] as? [[String: Any]] else {
+            return []
+        }
+        return content.compactMap { item in
+            guard item["type"] as? String == "tool_use" else {
+                return nil
+            }
+            let id = item["id"] as? String ?? UUID().uuidString
+            let name = item["name"] as? String ?? "Tool use"
+            return ToolUseSummary(id: id, name: name)
+        }
+    }
+
+    private static func firstText(in message: [String: Any]?) -> String? {
+        guard let content = message?["content"] as? [[String: Any]] else {
+            if let text = message?["content"] as? String {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return nil
+        }
+        for item in content where item["type"] as? String == "text" {
+            if let text = item["text"] as? String {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func statusFor(
+        lastMeaningfulEvent: String,
+        pendingCalls: Int,
+        lastActivity: Date,
+        now: Date
+    ) -> SessionStatus {
+        if pendingCalls > 0 {
+            return .working
+        }
+        let age = now.timeIntervalSince(lastActivity)
+        if age > 8 * 60 * 60 {
+            return .inactive
+        }
+        switch lastMeaningfulEvent {
+        case "user_message", "tool_use", "tool_result":
+            return .working
+        case "assistant_message":
+            return .completed
+        default:
+            return .completed
+        }
+    }
+
+    private static func projectNameFromCWD(_ cwd: String) -> String {
+        let expanded = (cwd as NSString).expandingTildeInPath
+        if expanded == NSHomeDirectory() {
+            return "~"
+        }
+        return URL(fileURLWithPath: expanded).lastPathComponent
+    }
+}
+
+public enum ClaudeSessionFileReader {
+    public static let defaultHeadByteLimit = 64 * 1_024
+    public static let defaultTailByteLimit = 256 * 1_024
+
+    public static func statusLines(
+        fileURL: URL,
+        headByteLimit: Int = defaultHeadByteLimit,
+        tailByteLimit: Int = defaultTailByteLimit
+    ) -> [String] {
+        guard let fileSize = size(of: fileURL), fileSize > 0 else {
+            return []
+        }
+        let fullReadLimit = max(0, headByteLimit) + max(0, tailByteLimit)
+        if fileSize <= UInt64(fullReadLimit),
+           let contents = try? String(contentsOf: fileURL, encoding: .utf8) {
+            return splitLines(contents)
+        }
+
+        let headLines = readLines(
+            fileURL: fileURL,
+            offset: 0,
+            length: min(max(0, headByteLimit), Int(fileSize)),
+            droppingLeadingPartial: false,
+            droppingTrailingPartial: true
+        )
+        let tailLength = min(max(0, tailByteLimit), Int(fileSize))
+        let tailOffset = max(0, Int(fileSize) - tailLength)
+        let tailLines = readLines(
+            fileURL: fileURL,
+            offset: UInt64(tailOffset),
+            length: tailLength,
+            droppingLeadingPartial: tailOffset > 0,
+            droppingTrailingPartial: false
+        )
+        return headLines + tailLines
+    }
+
+    private static func size(of fileURL: URL) -> UInt64? {
+        guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey]),
+              let fileSize = values.fileSize else {
+            return nil
+        }
+        return UInt64(fileSize)
+    }
+
+    private static func readLines(
+        fileURL: URL,
+        offset: UInt64,
+        length: Int,
+        droppingLeadingPartial: Bool,
+        droppingTrailingPartial: Bool
+    ) -> [String] {
+        guard length > 0,
+              let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            return []
+        }
+        defer { try? handle.close() }
+
+        do {
+            try handle.seek(toOffset: offset)
+            let data = handle.readData(ofLength: length)
+            guard var text = String(data: data, encoding: .utf8) else {
+                return []
+            }
+            if droppingLeadingPartial {
+                guard let newline = text.firstIndex(of: "\n") else {
+                    return []
+                }
+                text = String(text[text.index(after: newline)...])
+            }
+            if droppingTrailingPartial, !text.hasSuffix("\n") {
+                guard let newline = text.lastIndex(of: "\n") else {
+                    return []
+                }
+                text = String(text[..<newline])
+            }
+            return splitLines(text)
+        } catch {
+            return []
+        }
+    }
+
+    private static func splitLines(_ text: String) -> [String] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 }
 
@@ -2032,6 +2546,355 @@ public struct CodexSessionStore: Sendable {
     }
 }
 
+public struct ClaudeSessionStore: Sendable {
+    public static let defaultRecentWindow: TimeInterval = 7 * 24 * 60 * 60
+    public static let defaultEndedRetention: TimeInterval = 30 * 60
+
+    public let root: URL
+    public let recentWindow: TimeInterval
+    public let endedRetention: TimeInterval
+
+    public init(
+        root: URL = URL(fileURLWithPath: "\(NSHomeDirectory())/.claude/projects"),
+        recentWindow: TimeInterval = Self.defaultRecentWindow,
+        endedRetention: TimeInterval = Self.defaultEndedRetention
+    ) {
+        self.root = root
+        self.recentWindow = recentWindow
+        self.endedRetention = endedRetention
+    }
+
+    public func loadSessions(now: Date = Date()) -> [AIAgentSession] {
+        let activeSessions = RunningClaudeProcesses.activeSessions()
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return activeSessions?.map { Self.session(from: $0, now: now) } ?? []
+        }
+
+        var candidates: [(fileURL: URL, modified: Date)] = []
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
+            guard !fileURL.path.contains("/subagents/"),
+                  let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let modified = values.contentModificationDate,
+                  now.timeIntervalSince(modified) <= recentWindow else {
+                continue
+            }
+            candidates.append((fileURL, modified))
+        }
+
+        let sessions = candidates
+            .sorted { $0.modified > $1.modified }
+            .compactMap { ClaudeSessionParser.parse(fileURL: $0.fileURL, now: now) }
+            .filter { activeSessions != nil || $0.status != .inactive }
+
+        guard let activeSessions else {
+            return sessions
+        }
+        return Self.filterLiveSessions(
+            sessions,
+            activeSessions: activeSessions,
+            now: now,
+            endedRetention: endedRetention
+        )
+    }
+
+    public static func filterLiveSessions(
+        _ sessions: [AIAgentSession],
+        activeSessions: [RunningClaudeProcess],
+        now: Date = Date(),
+        endedRetention: TimeInterval = Self.defaultEndedRetention
+    ) -> [AIAgentSession] {
+        var usedProcessIDs: Set<Int> = []
+        let activeBySessionID = Dictionary(uniqueKeysWithValues: activeSessions.map { ($0.sessionID, $0) })
+        let activeByCWD = Dictionary(grouping: activeSessions) { process in
+            RunningCodexProcesses.normalizedPath(process.cwd)
+        }.mapValues { processes in
+            processes.sorted { $0.pid > $1.pid }
+        }
+
+        var result: [AIAgentSession] = []
+        for session in sessions.sorted(by: { $0.lastActivity > $1.lastActivity }) {
+            let cwd = RunningCodexProcesses.normalizedPath(session.cwd)
+            let process = activeBySessionID[session.id].flatMap { usedProcessIDs.contains($0.pid) ? nil : $0 }
+                ?? activeByCWD[cwd]?.first(where: { !usedProcessIDs.contains($0.pid) })
+
+            guard let process else {
+                if now.timeIntervalSince(session.lastActivity) <= endedRetention {
+                    result.append(endedSession(from: session))
+                }
+                continue
+            }
+
+            usedProcessIDs.insert(process.pid)
+            result.append(liveSession(from: session, process: process))
+        }
+
+        for process in activeSessions where !usedProcessIDs.contains(process.pid) {
+            result.append(session(from: process, now: now))
+        }
+
+        return sortForDisplay(result)
+    }
+
+    private static func liveSession(from session: AIAgentSession, process: RunningClaudeProcess) -> AIAgentSession {
+        let processStatus = ClaudeProcessStatusMapper.sessionStatus(for: process.status)
+        let shouldShowIdle = processStatus == .completed && session.status != .completed
+        let shouldReviveInactive = session.status == .inactive && processStatus == nil
+        let status = processStatus ?? (shouldReviveInactive ? .completed : session.status)
+        let summary: String
+        if shouldShowIdle || shouldReviveInactive {
+            summary = "Idle"
+        } else if processStatus == .waiting {
+            summary = "Waiting for input"
+        } else if processStatus == .working && session.status != .working {
+            summary = "Claude Code"
+        } else {
+            summary = session.summary
+        }
+        return AIAgentSession(
+            id: session.id,
+            source: .claude,
+            projectName: session.projectName,
+            displayName: session.displayName,
+            cwd: session.cwd,
+            status: status,
+            lastActivity: session.lastActivity,
+            pendingToolCalls: status == .working ? max(1, session.pendingToolCalls) : 0,
+            summary: summary,
+            windowTitleHints: process.windowTitleHints,
+            codexProcessID: process.pid
+        )
+    }
+
+    private static func session(from process: RunningClaudeProcess, now: Date) -> AIAgentSession {
+        let status = ClaudeProcessStatusMapper.sessionStatus(for: process.status) ?? .working
+        let projectName = projectNameFromCWD(process.cwd)
+        return AIAgentSession(
+            id: process.sessionID,
+            source: .claude,
+            projectName: projectName,
+            displayName: projectName,
+            cwd: process.cwd,
+            status: status,
+            lastActivity: now,
+            pendingToolCalls: status == .working ? 1 : 0,
+            summary: processSummary(for: status),
+            windowTitleHints: process.windowTitleHints,
+            codexProcessID: process.pid
+        )
+    }
+
+    private static func processSummary(for status: SessionStatus) -> String {
+        switch status {
+        case .waiting:
+            return "Waiting for input"
+        case .working:
+            return "Claude Code"
+        case .completed:
+            return "Idle"
+        case .inactive:
+            return "Idle"
+        case .ended:
+            return "Claude process ended"
+        }
+    }
+
+    private static func endedSession(from session: AIAgentSession) -> AIAgentSession {
+        AIAgentSession(
+            id: session.id,
+            source: .claude,
+            projectName: session.projectName,
+            displayName: session.displayName,
+            cwd: session.cwd,
+            status: .ended,
+            lastActivity: session.lastActivity,
+            pendingToolCalls: 0,
+            summary: "Claude process ended",
+            windowTitleHints: [],
+            codexProcessID: nil
+        )
+    }
+
+    private static func sortForDisplay(_ sessions: [AIAgentSession]) -> [AIAgentSession] {
+        sessions.sorted { lhs, rhs in
+            if lhs.status.sortPriority != rhs.status.sortPriority {
+                return lhs.status.sortPriority > rhs.status.sortPriority
+            }
+            return lhs.lastActivity > rhs.lastActivity
+        }
+    }
+
+    private static func projectNameFromCWD(_ cwd: String) -> String {
+        let expanded = (cwd as NSString).expandingTildeInPath
+        if expanded == NSHomeDirectory() {
+            return "~"
+        }
+        return URL(fileURLWithPath: expanded).lastPathComponent
+    }
+
+    public func loadTokenUsage(now: Date = Date(), calendar: Calendar = .current) -> TokenUsageSummary {
+        guard let earliestRelevantDate = calendar.date(
+            byAdding: .day,
+            value: -8,
+            to: now
+        ),
+        let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return .empty
+        }
+
+        var lines: [String] = []
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
+            guard let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let modified = values.contentModificationDate,
+                  modified >= earliestRelevantDate,
+                  let contents = try? String(contentsOf: fileURL, encoding: .utf8) else {
+                continue
+            }
+            lines.append(contents)
+        }
+        return ClaudeTokenUsageParser.parse(lines: lines.flatMap { $0.split(separator: "\n").map(String.init) }, now: now, calendar: calendar)
+    }
+}
+
+public struct AISessionStore: Sendable {
+    public let codexStore: CodexSessionStore
+    public let claudeStore: ClaudeSessionStore
+
+    public init(
+        codexStore: CodexSessionStore = CodexSessionStore(),
+        claudeStore: ClaudeSessionStore = ClaudeSessionStore()
+    ) {
+        self.codexStore = codexStore
+        self.claudeStore = claudeStore
+    }
+
+    public func loadSessions(now: Date = Date()) -> [AIAgentSession] {
+        Self.merge(
+            codexSessions: codexStore.loadSessions(now: now),
+            claudeSessions: claudeStore.loadSessions(now: now)
+        )
+    }
+
+    public func loadTokenUsage(now: Date = Date(), calendar: Calendar = .current) -> TokenUsageSummary {
+        codexStore.loadTokenUsage(now: now, calendar: calendar)
+    }
+
+    public func loadAgentTokenUsage(now: Date = Date(), calendar: Calendar = .current) -> AgentTokenUsageSummary {
+        AgentTokenUsageSummary(
+            codex: codexStore.loadTokenUsage(now: now, calendar: calendar),
+            claude: claudeStore.loadTokenUsage(now: now, calendar: calendar)
+        )
+    }
+
+    public static func merge(codexSessions: [AIAgentSession], claudeSessions: [AIAgentSession]) -> [AIAgentSession] {
+        (codexSessions + claudeSessions).sorted { lhs, rhs in
+            if lhs.status.sortPriority != rhs.status.sortPriority {
+                return lhs.status.sortPriority > rhs.status.sortPriority
+            }
+            return lhs.lastActivity > rhs.lastActivity
+        }
+    }
+}
+
+public enum ClaudeTokenUsageParser {
+    private struct TokenEvent {
+        let timestamp: Date
+        let tokens: Int
+    }
+
+    public static func parse(
+        lines: [String],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> TokenUsageSummary {
+        var events: [TokenEvent] = []
+        var todayTokens = 0
+        var latestTimestamp: Date?
+
+        for line in lines where !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let event = parseJSONLine(line),
+                  event["type"] as? String == "assistant",
+                  let timestampString = event["timestamp"] as? String,
+                  let timestamp = claudeDate(from: timestampString),
+                  let message = event["message"] as? [String: Any],
+                  let usage = message["usage"] as? [String: Any] else {
+                continue
+            }
+
+            let tokens = [
+                intValue(usage["input_tokens"]),
+                intValue(usage["output_tokens"]),
+                intValue(usage["cache_creation_input_tokens"])
+            ]
+            .compactMap { $0 }
+            .reduce(0, +)
+            guard tokens > 0 else {
+                continue
+            }
+
+            events.append(TokenEvent(timestamp: timestamp, tokens: tokens))
+            if calendar.isDate(timestamp, inSameDayAs: now) {
+                todayTokens += tokens
+            }
+            if latestTimestamp == nil || timestamp >= latestTimestamp! {
+                latestTimestamp = timestamp
+            }
+        }
+
+        return TokenUsageSummary(
+            totalTokens: currentWeekTokens(from: events, now: now, calendar: calendar),
+            todayTokens: todayTokens,
+            todayUsedPercent: nil,
+            primaryUsedPercent: nil,
+            primaryResetAt: nil,
+            secondaryUsedPercent: nil,
+            secondaryResetAt: nil,
+            updatedAt: latestTimestamp
+        )
+    }
+
+    private static func currentWeekTokens(from events: [TokenEvent], now: Date, calendar: Calendar) -> Int {
+        guard let week = calendar.dateInterval(of: .weekOfYear, for: now) else {
+            return events.map(\.tokens).reduce(0, +)
+        }
+        return events
+            .filter { week.contains($0.timestamp) }
+            .map(\.tokens)
+            .reduce(0, +)
+    }
+
+    private static func parseJSONLine(_ line: String) -> [String: Any]? {
+        guard let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else {
+            return nil
+        }
+        return dictionary
+    }
+
+    private static func claudeDate(from value: String) -> Date? {
+        ISO8601DateFormatter.codex.date(from: value)
+            ?? ISO8601DateFormatter.basic.date(from: value)
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let int = value as? Int {
+            return int
+        }
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return nil
+    }
+}
+
 public enum RunningCodexProcesses {
     public static func activeSessionCounts() -> [String: Int]? {
         guard let sessions = activeSessions() else {
@@ -2198,6 +3061,142 @@ public enum RunningCodexProcesses {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
 
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return output
+        } catch {
+            return nil
+        }
+    }
+}
+
+public enum RunningClaudeProcesses {
+    public static func activeSessions(
+        sessionStateRoot: URL = URL(fileURLWithPath: "\(NSHomeDirectory())/.claude/sessions")
+    ) -> [RunningClaudeProcess]? {
+        guard let psOutput = runProcess(executable: "/bin/ps", arguments: ["-axo", "pid,ppid,command"]) else {
+            return nil
+        }
+        let pids = Set(claudeProcessRecords(from: psOutput).map(\.pid))
+        if pids.isEmpty {
+            return []
+        }
+
+        let stateByPID = pids.reduce(into: [Int: String]()) { result, pid in
+            let fileURL = sessionStateRoot.appendingPathComponent("\(pid).json")
+            guard let contents = try? String(contentsOf: fileURL, encoding: .utf8) else {
+                return
+            }
+            result[pid] = contents
+        }
+        return activeSessions(psOutput: psOutput, sessionStateJSONByPID: stateByPID)
+    }
+
+    public static func activeSessions(
+        psOutput: String,
+        sessionStateJSONByPID: [Int: String]
+    ) -> [RunningClaudeProcess] {
+        claudeProcessRecords(from: psOutput)
+            .sorted { $0.pid < $1.pid }
+            .compactMap { record in
+                guard let state = sessionState(from: sessionStateJSONByPID[record.pid], fallbackPID: record.pid) else {
+                    return nil
+                }
+                return RunningClaudeProcess(
+                    pid: record.pid,
+                    sessionID: state.sessionID,
+                    cwd: RunningCodexProcesses.normalizedPath(state.cwd),
+                    status: state.status,
+                    windowTitleHints: windowTitleHints(sessionID: state.sessionID, command: record.command)
+                )
+            }
+    }
+
+    private struct ClaudeSessionState {
+        let pid: Int
+        let sessionID: String
+        let cwd: String
+        let status: String?
+    }
+
+    private static func claudeProcessRecords(from psOutput: String) -> [ProcessRecord] {
+        processRecords(from: psOutput)
+            .filter { isClaudeCodeCommand($0.command) }
+    }
+
+    private struct ProcessRecord {
+        let pid: Int
+        let command: String
+    }
+
+    private static func processRecords(from psOutput: String) -> [ProcessRecord] {
+        var records: [ProcessRecord] = []
+        for line in psOutput.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            let parts = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(maxSplits: 2, whereSeparator: \.isWhitespace)
+                .map(String.init)
+            guard parts.count >= 2,
+                  let pid = Int(parts[0]) else {
+                continue
+            }
+            let command = parts.count >= 3 ? parts[2] : parts[1]
+            records.append(ProcessRecord(pid: pid, command: command))
+        }
+        return records
+    }
+
+    private static func isClaudeCodeCommand(_ command: String) -> Bool {
+        let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let executable = normalized.split(whereSeparator: \.isWhitespace).first.map(String.init) else {
+            return false
+        }
+        let isClaudeExecutable = executable == "claude" || executable.hasSuffix("/claude")
+        return isClaudeExecutable
+            && (normalized == executable || normalized.hasPrefix("\(executable) code"))
+    }
+
+    private static func windowTitleHints(sessionID: String, command: String) -> [String] {
+        let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let executable = normalized.split(whereSeparator: \.isWhitespace).first.map(String.init),
+              normalized.hasPrefix("\(executable) code") else {
+            return [sessionID]
+        }
+        return RunningClaudeProcess.defaultWindowTitleHints(sessionID: sessionID)
+    }
+
+    private static func sessionState(from json: String?, fallbackPID: Int) -> ClaudeSessionState? {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let pid = object["pid"] as? Int ?? fallbackPID
+        guard let sessionID = object["sessionId"] as? String,
+              let cwd = object["cwd"] as? String else {
+            return nil
+        }
+        return ClaudeSessionState(
+            pid: pid,
+            sessionID: sessionID,
+            cwd: cwd,
+            status: object["status"] as? String
+        )
+    }
+
+    private static func runProcess(executable: String, arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice

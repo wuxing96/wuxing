@@ -1,7 +1,7 @@
 import Foundation
 import TrafficLightCore
 
-let store = CodexSessionStore()
+let store = AISessionStore()
 if CommandLine.arguments.contains("--debug-running") {
     for command in RunningProcessCommands.snapshot()
         where command.contains("status-dump") || command.contains("swift run") || command.contains("core-self-test") {
@@ -26,11 +26,15 @@ if let benchmarkIndex = CommandLine.arguments.firstIndex(of: "--benchmark-sessio
 }
 
 let sessions = store.loadSessions()
-let tokenUsage = CommandLine.arguments.contains("--sessions-only") ? .empty : store.loadTokenUsage()
-let summary = SessionAggregator.aggregate(sessions, tokenUsage: tokenUsage)
+let tokenUsage = CommandLine.arguments.contains("--sessions-only") ? AgentTokenUsageSummary() : store.loadAgentTokenUsage()
+let summary = SessionAggregator.aggregate(
+    sessions,
+    tokenUsage: tokenUsage.codex,
+    claudeTokenUsage: tokenUsage.claude
+)
 let weekPercent = summary.tokenUsage.totalRemainingPercent.map { "\(Int($0.rounded()))%" } ?? "--"
 let todayPercent = summary.tokenUsage.todayUsedPercent.map { "\(Int($0.rounded()))%" } ?? "--"
-print("status=\(summary.status.rawValue) label=\(summary.status.label) sessions=\(summary.sessions.count) week_left=\(weekPercent) week_tokens=\(summary.tokenUsage.totalTokens) today=\(todayPercent) today_tokens=\(summary.tokenUsage.todayTokens)")
+print("status=\(summary.status.rawValue) label=\(summary.status.label) sessions=\(summary.sessions.count) codex_week_left=\(weekPercent) codex_week_tokens=\(summary.tokenUsage.totalTokens) codex_today=\(todayPercent) codex_today_tokens=\(summary.tokenUsage.todayTokens) claude_week_tokens=\(summary.claudeTokenUsage.totalTokens) claude_today_tokens=\(summary.claudeTokenUsage.todayTokens)")
 for session in summary.sessions {
-    print("\(session.status.rawValue)\t\(session.displayName)\t\(session.summary)")
+    print("\(session.status.rawValue)\t\(session.source.rawValue)\t\(session.displayName)\t\(session.summary)")
 }

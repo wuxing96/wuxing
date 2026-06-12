@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: NSPanel!
     private var trafficView: TrafficLightView!
     private var timer: Timer?
-    private let store = CodexSessionStore()
+    private let store = AISessionStore()
     private let workspaceFocuser = AgentWorkspaceWindowFocuser()
     private var isExpanded = false
     private var userMovedWindow = false
@@ -114,7 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.refreshTokenUsageIfNeeded(now: now)
                 self.trafficView.summary = SessionAggregator.aggregate(
                     sessions,
-                    tokenUsage: self.trafficView.summary.tokenUsage
+                    tokenUsage: self.trafficView.summary.tokenUsage,
+                    claudeTokenUsage: self.trafficView.summary.claudeTokenUsage
                 )
                 if self.isExpanded {
                     self.resizeExpandedPanel()
@@ -136,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tokenRefreshInFlight = true
         let store = self.store
         DispatchQueue.global(qos: .background).async { [weak self] in
-            let tokenUsage = store.loadTokenUsage(now: now)
+            let tokenUsage = store.loadAgentTokenUsage(now: now)
             DispatchQueue.main.async {
                 guard let self else {
                     return
@@ -145,7 +146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.lastTokenRefresh = now
                 self.trafficView.summary = SessionAggregator.aggregate(
                     self.trafficView.summary.sessions,
-                    tokenUsage: tokenUsage
+                    tokenUsage: tokenUsage.codex,
+                    claudeTokenUsage: tokenUsage.claude
                 )
                 if self.isExpanded {
                     self.resizeExpandedPanel()
@@ -261,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Enable window switching?"
-        alert.informativeText = "\(TrafficLightProduct.displayName) needs Accessibility access to jump to the Codex terminal or IDE window for a task."
+        alert.informativeText = "\(TrafficLightProduct.displayName) needs Accessibility access to jump to the AI terminal or IDE window for a task."
         alert.addButton(withTitle: "Open Settings")
         alert.addButton(withTitle: "Cancel")
         alert.window.level = .floating
@@ -278,7 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "No matching window found"
-        alert.informativeText = "I could not find a Codex terminal or IDE window for \(session.displayName). Open the project window and try again."
+        alert.informativeText = "I could not find an AI terminal or IDE window for \(session.source.rawValue) \(session.displayName). Open the project window and try again."
         alert.addButton(withTitle: "OK")
         alert.window.level = .floating
         alert.runModal()
@@ -472,6 +474,10 @@ private final class AgentWorkspaceWindowFocuser {
             return .needsAccessibilityPermission
         }
 
+        if focusClaudeTerminalTabByTTY(session: session) {
+            return .activatedOwningApp
+        }
+
         if let focused = focusVisibleWindow(session: session) {
             return focused
         }
@@ -497,7 +503,7 @@ private final class AgentWorkspaceWindowFocuser {
             return nil
         }
 
-        candidate.app.activate(options: [.activateIgnoringOtherApps])
+        candidate.app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         AXUIElementSetAttributeValue(candidate.element, kAXMainAttribute as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(candidate.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         return .focused(match)
@@ -512,16 +518,30 @@ private final class AgentWorkspaceWindowFocuser {
         let appPIDs = NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular || $0.activationPolicy == .accessory }
             .map { Int($0.processIdentifier) }
-        guard let ownerPID = RunningCodexProcesses.nearestAncestorPID(
-            from: codexProcessID,
-            candidatePIDs: appPIDs,
+        guard let ownerPID = AgentWorkspaceOwnerResolver.ownerPID(
+            forProcessID: codexProcessID,
+            appPIDs: appPIDs,
             psOutput: psOutput
         ),
         let app = NSRunningApplication(processIdentifier: pid_t(ownerPID)) else {
             return false
         }
 
-        return app.activate(options: [.activateIgnoringOtherApps])
+        return app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+    }
+
+    private func focusClaudeTerminalTabByTTY(session: AIAgentSession) -> Bool {
+        guard session.source == .claude,
+              let processID = session.codexProcessID,
+              let psOutput = runProcess(executable: "/bin/ps", arguments: ["-axo", "pid,tty,command"]),
+              let tty = AgentWorkspaceTTYResolver.tty(forProcessID: processID, psOutput: psOutput) else {
+            return false
+        }
+
+        let scriptLines = AgentWorkspaceTerminalFocusScript.lines(forTTY: tty)
+        let arguments = scriptLines.flatMap { ["-e", $0] }
+        return runProcess(executable: "/usr/bin/osascript", arguments: arguments)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "ok"
     }
 
     private func runProcess(executable: String, arguments: [String]) -> String? {
@@ -556,6 +576,25 @@ private final class AgentWorkspaceWindowFocuser {
             return nil
         }
         return windowCandidates().map(\.snapshot)
+    }
+
+    func ownerAppNameForDiagnostics(session: AIAgentSession) -> String? {
+        guard let processID = session.codexProcessID,
+              let psOutput = runProcess(executable: "/bin/ps", arguments: ["-axo", "pid,ppid,command"]) else {
+            return nil
+        }
+        let apps = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular || $0.activationPolicy == .accessory }
+        let appPIDs = apps.map { Int($0.processIdentifier) }
+        guard let ownerPID = AgentWorkspaceOwnerResolver.ownerPID(
+            forProcessID: processID,
+            appPIDs: appPIDs,
+            psOutput: psOutput
+        ),
+        let app = apps.first(where: { Int($0.processIdentifier) == ownerPID }) else {
+            return nil
+        }
+        return "\(app.localizedName ?? app.bundleIdentifier ?? "PID \(ownerPID)") (\(ownerPID))"
     }
 
     private func windowCandidates() -> [WindowCandidate] {
@@ -861,20 +900,16 @@ final class TrafficLightView: NSView {
             )
         }
 
-        drawText(
-            TrafficLightTokenDisplay.compactWeekly(summary.tokenUsage),
-            in: NSRect(x: bounds.maxX - 118, y: bounds.midY + 2, width: 104, height: 13),
-            font: .monospacedDigitSystemFont(ofSize: 9, weight: .semibold),
-            color: .white.withAlphaComponent(0.82),
-            alignment: .right
-        )
-        drawText(
-            TrafficLightTokenDisplay.compactToday(summary.tokenUsage),
-            in: NSRect(x: bounds.maxX - 118, y: bounds.midY - 13, width: 104, height: 13),
-            font: .monospacedDigitSystemFont(ofSize: 9, weight: .medium),
-            color: .white.withAlphaComponent(0.60),
-            alignment: .right
-        )
+        let lines = TrafficLightTokenDisplay.collapsedLines(for: summary)
+        for (index, line) in lines.prefix(2).enumerated() {
+            drawText(
+                line,
+                in: NSRect(x: bounds.maxX - 124, y: bounds.midY + (index == 0 ? 2 : -13), width: 110, height: 13),
+                font: .monospacedDigitSystemFont(ofSize: 9, weight: index == 0 ? .semibold : .medium),
+                color: .white.withAlphaComponent(index == 0 ? 0.82 : 0.60),
+                alignment: .right
+            )
+        }
     }
 
     private func drawExpanded() {
@@ -888,21 +923,22 @@ final class TrafficLightView: NSView {
             in: TrafficLightPanelInteraction.closeButtonRect(in: bounds)
         )
 
-        let chipWidth = (bounds.width - 42) / 2
-        let weeklyMetric = TrafficLightTokenDisplay.weekly(summary.tokenUsage)
-        let todayMetric = TrafficLightTokenDisplay.today(summary.tokenUsage)
-        drawTokenChip(
-            label: weeklyMetric.label,
-            primary: weeklyMetric.primary,
-            secondary: weeklyMetric.secondary,
-            in: NSRect(x: 16, y: bounds.height - 78, width: chipWidth, height: 34)
-        )
-        drawTokenChip(
-            label: todayMetric.label,
-            primary: todayMetric.primary,
-            secondary: todayMetric.secondary,
-            in: NSRect(x: 26 + chipWidth, y: bounds.height - 78, width: chipWidth, height: 34)
-        )
+        let panels = TrafficLightTokenDisplay.expandedPanels(for: summary)
+        let chipGap: CGFloat = panels.count > 1 ? 10 : 0
+        let chipWidth = (bounds.width - 32 - chipGap * CGFloat(max(0, panels.count - 1))) / CGFloat(max(1, panels.count))
+        for (index, panel) in panels.enumerated() {
+            drawTokenChip(
+                label: panel.label,
+                primary: panel.primary,
+                secondary: panel.secondary,
+                in: NSRect(
+                    x: 16 + CGFloat(index) * (chipWidth + chipGap),
+                    y: bounds.height - 78,
+                    width: chipWidth,
+                    height: 34
+                )
+            )
+        }
 
         if summary.sessions.isEmpty {
             drawText(
@@ -994,7 +1030,7 @@ final class TrafficLightView: NSView {
         drawDot(status: session.status, center: CGPoint(x: rect.minX + 16, y: rect.maxY - 15))
         let contentWidth = TrafficLightSessionRowLayout.contentTextWidth(in: rect)
         drawText(
-            session.displayName,
+            "\(session.source.rawValue) · \(session.displayName)",
             in: NSRect(x: rect.minX + 32, y: rect.maxY - 20, width: contentWidth, height: 15),
             font: .systemFont(ofSize: 12, weight: .semibold),
             color: .white.withAlphaComponent(0.9),
@@ -1660,7 +1696,7 @@ final class TrafficLightView: NSView {
         case .waiting:
             return "Needs your input"
         case .working:
-            return "Codex is working"
+            return "AI is working"
         case .completed:
             return "Ready"
         case .ended:
@@ -1672,7 +1708,7 @@ final class TrafficLightView: NSView {
 
     private func subtitleText() -> String {
         if summary.sessions.isEmpty {
-            return "Watching ~/.codex/sessions"
+            return "Watching Codex and Claude"
         }
         return "\(summary.sessions.count) recent session\(summary.sessions.count == 1 ? "" : "s")"
     }
@@ -1696,7 +1732,7 @@ if CommandLine.arguments.contains("--print-accessibility-trust") {
 }
 
 if CommandLine.arguments.contains("--print-window-matches") {
-    let sessions = SessionAggregator.aggregate(CodexSessionStore().loadSessions()).sessions
+    let sessions = SessionAggregator.aggregate(AISessionStore().loadSessions()).sessions
     let focuser = AgentWorkspaceWindowFocuser()
     guard let windows = focuser.windowSnapshotsForDiagnostics() else {
         print("not-trusted")
@@ -1705,8 +1741,10 @@ if CommandLine.arguments.contains("--print-window-matches") {
     print("windows=\(windows.count) sessions=\(sessions.count)")
     for session in sessions {
         let match = AgentWorkspaceWindowMatcher.bestMatch(for: session, windows: windows)
-        let windowText = match.map { "\($0.kind)\t\($0.window.appName)\t\($0.window.title)" } ?? "no-match"
-        print("\(session.status.rawValue)\t\(session.displayName)\t\(session.summary)\t\(session.windowTitleHints.joined(separator: ","))\t\(windowText)")
+        let windowText = match.map { "\($0.kind)\t\($0.window.appName)\t\($0.window.title)" }
+            ?? focuser.ownerAppNameForDiagnostics(session: session).map { "owner-app\t\($0)" }
+            ?? "no-match"
+        print("\(session.status.rawValue)\t\(session.source.rawValue)\t\(session.displayName)\t\(session.summary)\t\(session.windowTitleHints.joined(separator: ","))\t\(windowText)")
     }
     exit(EXIT_SUCCESS)
 }

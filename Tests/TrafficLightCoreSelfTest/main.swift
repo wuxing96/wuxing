@@ -8,7 +8,7 @@ try escalatedToolCallStartsAsWaitingForApproval()
 try parallelEscalatedToolCallsWaitForApproval()
 try waitingApprovalOutranksRunningApproval()
 try escalatedToolCallWithRunningProcessIsWorking()
-try installLoginAgentRunningTextIsWorking()
+try approvalPromptRunningLabelStillWaitsForApproval()
 try escalatedToolCallStillWaitsForApprovalAfterLongDelay()
 try requestUserInputIsWaitingForUser()
 try functionCallOutputWithoutAssistantReplyIsWorking()
@@ -29,11 +29,19 @@ try userMessageStartsWorkingTurn()
 try userMessageClearsStaleApprovalWait()
 try sessionFileStatusReaderUsesHeadAndTail()
 try sessionFileReaderPreservesOversizedSessionMetaCWD()
+try claudeSessionParserExtractsCompletedProjectSession()
+try claudeSessionParserMarksPendingToolUseAsWorking()
 try aggregatorUsesHighestPriorityStatus()
 try aggregatorSortsByAttentionThenRecentActivity()
+try aggregatorCarriesSeparateClaudeTokenUsage()
 try duplicateProjectNamesGetDisplayNumbers()
 try codexProcessSnapshotCountsNativeCodexCWDs()
 try codexProcessSnapshotExtractsTerminalTitleHints()
+try claudeProcessSnapshotReadsSessionState()
+try claudeProcessSnapshotAddsClaudeCodeTitleHint()
+try claudeProcessSnapshotCountsBareClaudeCommand()
+try processTTYResolverNormalizesTerminalTTY()
+try claudeProcessStatusMapperClassifiesKnownStateFamilies()
 try sessionStoreDropsSessionsWithoutLiveCodexProcess()
 try sessionStoreKeepsRecentlyEndedSessionsBriefly()
 try sessionStoreDropsExpiredEndedSessions()
@@ -42,6 +50,10 @@ try sessionStoreRecentWindowCoversIdleWorkweek()
 try sessionStoreKeepsOnlyLatestSessionsForLiveProcessCount()
 try sessionStoreAssignsTerminalHintsByCWDRecency()
 try sessionStoreAssignsCodexProcessIDsByCWDRecency()
+try claudeSessionStoreKeepsActiveIdleProjectSession()
+try claudeActiveIdleProcessOverridesStaleWorkingTranscript()
+try claudeSessionStoreShowsActiveProcessWithoutTranscript()
+try aiSessionStoreMergesCodexAndClaudeSessions()
 try codexProcessOwnerPIDResolvesTerminalAncestor()
 try tokenUsageSumsLocalTodayAndLatestRateLimit()
 try tokenUsageReportsWeekAndTodayPercentWithTokens()
@@ -51,6 +63,11 @@ try tokenUsageIgnoresModelSpecificNonzeroLimitForWeeklyQuota()
 try tokenUsageIgnoresExpiredWeeklyQuota()
 try tokenUsageUsesNewestBillingModeWhenAPIRecordFollowsWeeklyQuota()
 try tokenUsageReportsTotalRemainingCreditsForAPIUsage()
+try claudeTokenUsageSumsLocalTodayAndWeek()
+try claudeTokenDisplayShowsUsageWithoutInventingBalance()
+try tokenDisplayShowsOnlyExistingAgentSources()
+try claudeSessionStoreLoadsTokenUsageFromProjectTranscripts()
+try aiSessionStoreLoadsCodexAndClaudeTokenUsage()
 try productIdentityUsesMushiSignal()
 try statusRefreshPolicyIsSubsecond()
 try sessionFileReaderUsesSmallTailWindow()
@@ -66,8 +83,13 @@ try sessionRowLayoutExposesSeparateOpenAndStopActions()
 try panelResizeRulesUseBottomRightGrip()
 try workspaceWindowMatcherPrefersCodexTerminalThenIDE()
 try workspaceWindowMatcherUsesTerminalHintBeforeHomeDirectory()
+try workspaceOwnerResolverFindsTerminalAncestorForClaude()
+try workspaceWindowMatcherMatchesClaudeCodeTitleForHomeSession()
+try workspaceWindowMatcherDoesNotUseClaudeCodeWindowForBareClaudeProject()
+try terminalFocusScriptRaisesMatchedWindowAcrossSpaces()
 try workspaceWindowMatcherSupportsLocalizedTerminalAppName()
 try workspaceWindowMatcherSupportsJetBrainsAndTrae()
+try tokenDisplayLabelsCodexBalanceSource()
 
 print("core-self-test: passed")
 
@@ -187,23 +209,23 @@ func escalatedToolCallWithRunningProcessIsWorking() throws {
     try expect(session.status == .working, "escalated call should be working once command process is running")
 }
 
-func installLoginAgentRunningTextIsWorking() throws {
+func approvalPromptRunningLabelStillWaitsForApproval() throws {
     let session = try CodexSessionParser.parse(
         lines: [
             sessionMeta(id: "s1", cwd: "/Users/wuxing/ai-traffic-light"),
             responseFunctionCall(
                 name: "exec_command",
                 callID: "call-1",
-                arguments: #"{"cmd":"scripts/install-login-agent.sh","workdir":"/Users/wuxing/ai-traffic-light","yield_time_ms":30000,"sandbox_permissions":"require_escalated","login":false}"#
+                arguments: #"{"cmd":"swift build","workdir":"/Users/wuxing/ai-traffic-light","yield_time_ms":30000,"sandbox_permissions":"require_escalated","login":false}"#
             )
         ],
         filePath: "/tmp/rollout-s1.jsonl",
         now: date("2026-06-09T08:20:12Z"),
-        runningProcessCommands: ["Running scripts/install-login-agent.sh"]
+        runningProcessCommands: ["Running swift build"]
     )
 
-    try expect(session.status == .working, "visible Running install-login-agent text should be working")
-    try expect(session.summary == "scripts/install-login-agent.sh", "running install-login-agent should show the command")
+    try expect(session.status == .waiting, "approval prompt Running label should still wait for confirmation")
+    try expect(session.summary == "Waiting for approval", "approval prompt should show approval wait")
 }
 
 func escalatedToolCallStillWaitsForApprovalAfterLongDelay() throws {
@@ -555,6 +577,54 @@ func sessionFileReaderPreservesOversizedSessionMetaCWD() throws {
     try expect(session.displayName == "tsailun", "display name should use the oversized metadata cwd basename")
 }
 
+func claudeSessionParserExtractsCompletedProjectSession() throws {
+    let session = try ClaudeSessionParser.parse(
+        lines: [
+            claudeUserMessage(
+                sessionID: "claude-1",
+                cwd: "/Users/wuxing/IdeaProjects/lich-dms",
+                text: "find the permission config"
+            ),
+            claudeAssistantText(
+                sessionID: "claude-1",
+                cwd: "/Users/wuxing/IdeaProjects/lich-dms",
+                text: "Found the config."
+            )
+        ],
+        filePath: "/Users/wuxing/.claude/projects/-Users-wuxing-IdeaProjects-lich-dms/claude-1.jsonl",
+        now: date("2026-06-09T08:30:00Z")
+    )
+
+    try expect(session.source == .claude, "Claude parser should mark sessions as Claude")
+    try expect(session.projectName == "lich-dms", "Claude parser should use cwd basename as project name")
+    try expect(session.status == .completed, "Claude text reply should be completed")
+    try expect(session.summary == "Found the config.", "Claude parser should summarize assistant text")
+}
+
+func claudeSessionParserMarksPendingToolUseAsWorking() throws {
+    let session = try ClaudeSessionParser.parse(
+        lines: [
+            claudeUserMessage(
+                sessionID: "claude-1",
+                cwd: "/Users/wuxing/IdeaProjects/lich-dms",
+                text: "search files"
+            ),
+            claudeAssistantToolUse(
+                sessionID: "claude-1",
+                cwd: "/Users/wuxing/IdeaProjects/lich-dms",
+                toolID: "tool-1",
+                name: "Bash"
+            )
+        ],
+        filePath: "/Users/wuxing/.claude/projects/-Users-wuxing-IdeaProjects-lich-dms/claude-1.jsonl",
+        now: date("2026-06-09T08:30:00Z")
+    )
+
+    try expect(session.status == .working, "pending Claude tool use should be working")
+    try expect(session.summary == "Bash", "pending Claude tool use should show the tool name")
+    try expect(session.pendingToolCalls == 1, "pending Claude tool use should count as a pending call")
+}
+
 func aggregatorUsesHighestPriorityStatus() throws {
     let sessions = [
         AIAgentSession.stub(id: "s1", projectName: "api", status: .completed),
@@ -582,6 +652,38 @@ func aggregatorSortsByAttentionThenRecentActivity() throws {
         summary.sessions.map(\.id) == ["waiting-new", "waiting-old", "working-new", "working-old", "ready-new"],
         "sessions should sort by attention first, then newest activity inside each status group"
     )
+}
+
+func aggregatorCarriesSeparateClaudeTokenUsage() throws {
+    let codexUsage = TokenUsageSummary(
+        totalTokens: 1_000,
+        todayTokens: 100,
+        todayUsedPercent: 10,
+        primaryUsedPercent: 25,
+        primaryResetAt: nil,
+        secondaryUsedPercent: nil,
+        secondaryResetAt: nil,
+        updatedAt: date("2026-06-09T08:20:00Z")
+    )
+    let claudeUsage = TokenUsageSummary(
+        totalTokens: 2_000,
+        todayTokens: 200,
+        todayUsedPercent: nil,
+        primaryUsedPercent: nil,
+        primaryResetAt: nil,
+        secondaryUsedPercent: nil,
+        secondaryResetAt: nil,
+        updatedAt: date("2026-06-09T08:21:00Z")
+    )
+
+    let summary = SessionAggregator.aggregate(
+        [],
+        tokenUsage: codexUsage,
+        claudeTokenUsage: claudeUsage
+    )
+
+    try expect(summary.tokenUsage.todayTokens == 100, "summary should keep Codex token usage")
+    try expect(summary.claudeTokenUsage.todayTokens == 200, "summary should keep Claude token usage separately")
 }
 
 func duplicateProjectNamesGetDisplayNumbers() throws {
@@ -636,6 +738,83 @@ func codexProcessSnapshotExtractsTerminalTitleHints() throws {
     try expect(sessions.map(\.pid) == [102, 202], "active sessions should include native codex child pids")
     try expect(sessions.map(\.cwd) == ["/Users/wuxing", "/Users/wuxing"], "active sessions should include the native codex cwd")
     try expect(sessions.map(\.windowTitleHints) == [["12534_1781085967351"], ["12844_1781085992565"]], "active sessions should expose fnm multishell ids as terminal title hints")
+}
+
+func claudeProcessSnapshotReadsSessionState() throws {
+    let sessions = RunningClaudeProcesses.activeSessions(
+        psOutput: """
+          PID  PPID COMMAND
+          94600 94266 claude code
+          53113 53111 rg claude
+        """,
+        sessionStateJSONByPID: [
+            94600: #"{"pid":94600,"sessionId":"claude-live","cwd":"/Users/wuxing/IdeaProjects/lich-dms","status":"idle","updatedAt":1781231295215}"#
+        ]
+    )
+
+    try expect(sessions.count == 1, "Claude process snapshot should include the running claude code process")
+    try expect(sessions[0].pid == 94600, "Claude process snapshot should preserve pid")
+    try expect(sessions[0].sessionID == "claude-live", "Claude process snapshot should read session id from session state")
+    try expect(sessions[0].cwd == "/Users/wuxing/IdeaProjects/lich-dms", "Claude process snapshot should read cwd from session state")
+    try expect(sessions[0].status == "idle", "Claude process snapshot should read status from session state")
+}
+
+func claudeProcessSnapshotAddsClaudeCodeTitleHint() throws {
+    let sessions = RunningClaudeProcesses.activeSessions(
+        psOutput: """
+          PID  PPID COMMAND
+          94600 94266 claude code
+        """,
+        sessionStateJSONByPID: [
+            94600: #"{"pid":94600,"sessionId":"claude-live","cwd":"/Users/wuxing","status":"idle"}"#
+        ]
+    )
+
+    try expect(sessions[0].windowTitleHints.contains("claude code"), "Claude sessions should expose a Terminal title hint for Open")
+}
+
+func claudeProcessSnapshotCountsBareClaudeCommand() throws {
+    let sessions = RunningClaudeProcesses.activeSessions(
+        psOutput: """
+          PID  PPID COMMAND
+          17982 17876 claude
+          53113 53111 rg claude
+        """,
+        sessionStateJSONByPID: [
+            17982: #"{"pid":17982,"sessionId":"claude-live","cwd":"/Users/wuxing/PyCharmMiscProject/design-anything","status":"idle"}"#
+        ]
+    )
+
+    try expect(sessions.count == 1, "Claude process snapshot should include bare claude CLI processes")
+    try expect(sessions[0].pid == 17982, "bare claude process should preserve pid")
+    try expect(sessions[0].status == "idle", "bare claude process should read session state")
+    try expect(!sessions[0].windowTitleHints.contains("claude code"), "bare claude processes should not reuse the claude code title hint")
+}
+
+func processTTYResolverNormalizesTerminalTTY() throws {
+    let psOutput = """
+      PID TT       COMMAND
+    94600 ttys003  claude code
+    """
+
+    try expect(
+        AgentWorkspaceTTYResolver.tty(forProcessID: 94600, psOutput: psOutput) == "/dev/ttys003",
+        "TTY resolver should normalize ps tty output for Terminal AppleScript matching"
+    )
+}
+
+func claudeProcessStatusMapperClassifiesKnownStateFamilies() throws {
+    for value in ["idle", "Idle"] {
+        try expect(ClaudeProcessStatusMapper.sessionStatus(for: value) == .completed, "Claude \(value) should display green")
+    }
+    for value in ["busy", "running", "working", "processing", "in_progress", "active"] {
+        try expect(ClaudeProcessStatusMapper.sessionStatus(for: value) == .working, "Claude \(value) should display red")
+    }
+    for value in ["waiting", "pending", "needs-confirm", "needs_confirmation", "requesting"] {
+        try expect(ClaudeProcessStatusMapper.sessionStatus(for: value) == .waiting, "Claude \(value) should display yellow")
+    }
+    try expect(ClaudeProcessStatusMapper.sessionStatus(for: nil) == nil, "missing Claude process status should keep transcript-derived status")
+    try expect(ClaudeProcessStatusMapper.sessionStatus(for: "unknown-new-status") == nil, "unknown Claude process status should keep transcript-derived status")
 }
 
 func sessionStoreDropsSessionsWithoutLiveCodexProcess() throws {
@@ -765,6 +944,119 @@ func sessionStoreAssignsCodexProcessIDsByCWDRecency() throws {
     )
 
     try expect(filtered.map(\.codexProcessID) == [202, 102], "active process pid should be assigned to the matching session")
+}
+
+func claudeSessionStoreKeepsActiveIdleProjectSession() throws {
+    let sessions = [
+        AIAgentSession(
+            id: "claude-live",
+            source: .claude,
+            projectName: "lich-dms",
+            displayName: "lich-dms",
+            cwd: "/Users/wuxing/IdeaProjects/lich-dms",
+            status: .inactive,
+            lastActivity: date("2026-06-09T00:20:00Z"),
+            pendingToolCalls: 0,
+            summary: "Idle"
+        )
+    ]
+
+    let filtered = ClaudeSessionStore.filterLiveSessions(
+        sessions,
+        activeSessions: [
+            RunningClaudeProcess(
+                pid: 94600,
+                sessionID: "claude-live",
+                cwd: "/Users/wuxing/IdeaProjects/lich-dms",
+                status: "idle"
+            )
+        ],
+        now: date("2026-06-09T09:00:00Z")
+    )
+
+    try expect(filtered.map(\.id) == ["claude-live"], "active Claude session should stay visible")
+    try expect(filtered[0].status == .completed, "active idle Claude session should display green")
+    try expect(filtered[0].summary == "Idle", "active idle Claude session should explain that it is idle")
+    try expect(filtered[0].codexProcessID == 94600, "active Claude session should keep its process id for stop/open actions")
+}
+
+func claudeActiveIdleProcessOverridesStaleWorkingTranscript() throws {
+    let sessions = [
+        AIAgentSession(
+            id: "claude-live",
+            source: .claude,
+            projectName: "~",
+            displayName: "~",
+            cwd: "/Users/wuxing",
+            status: .working,
+            lastActivity: date("2026-06-09T08:20:00Z"),
+            pendingToolCalls: 0,
+            summary: "New request"
+        )
+    ]
+
+    let filtered = ClaudeSessionStore.filterLiveSessions(
+        sessions,
+        activeSessions: [
+            RunningClaudeProcess(
+                pid: 94600,
+                sessionID: "claude-live",
+                cwd: "/Users/wuxing",
+                status: "idle"
+            )
+        ],
+        now: date("2026-06-09T09:00:00Z")
+    )
+
+    try expect(filtered[0].status == .completed, "Claude process status=idle should override stale transcript working state")
+    try expect(filtered[0].summary == "Idle", "idle Claude process should not keep a stale working summary")
+}
+
+func claudeSessionStoreShowsActiveProcessWithoutTranscript() throws {
+    let filtered = ClaudeSessionStore.filterLiveSessions(
+        [],
+        activeSessions: [
+            RunningClaudeProcess(
+                pid: 94600,
+                sessionID: "claude-live",
+                cwd: "/Users/wuxing",
+                status: "idle"
+            )
+        ],
+        now: date("2026-06-09T09:00:00Z")
+    )
+
+    try expect(filtered.count == 1, "Claude active process without transcript should still be visible")
+    try expect(filtered[0].source == .claude, "synthetic Claude process session should use Claude source")
+    try expect(filtered[0].displayName == "~", "synthetic Claude process session should use cwd project name")
+    try expect(filtered[0].status == .completed, "idle Claude process should display green")
+    try expect(filtered[0].summary == "Idle", "idle Claude process should show Idle summary")
+}
+
+func aiSessionStoreMergesCodexAndClaudeSessions() throws {
+    let codex = AIAgentSession.stub(
+        id: "codex-live",
+        projectName: "tsailun",
+        status: .completed,
+        lastActivity: date("2026-06-09T08:20:00Z"),
+        cwd: "/Users/wuxing/IdeaProjects/tsailun"
+    )
+    let claude = AIAgentSession(
+        id: "claude-live",
+        source: .claude,
+        projectName: "lich-dms",
+        displayName: "lich-dms",
+        cwd: "/Users/wuxing/IdeaProjects/lich-dms",
+        status: .working,
+        lastActivity: date("2026-06-09T08:21:00Z"),
+        pendingToolCalls: 1,
+        summary: "Bash"
+    )
+
+    let merged = AISessionStore.merge(codexSessions: [codex], claudeSessions: [claude])
+
+    try expect(merged.map(\.source) == [.claude, .codex], "AI session store should merge Claude and Codex sessions")
+    try expect(merged.map(\.displayName) == ["lich-dms", "tsailun"], "merged sessions should keep existing display names before aggregation")
 }
 
 func codexProcessOwnerPIDResolvesTerminalAncestor() throws {
@@ -1017,9 +1309,9 @@ func tokenUsageUsesNewestBillingModeWhenAPIRecordFollowsWeeklyQuota() throws {
 
     try expect(summary.totalRemainingPercent == nil, "newer API billing record should suppress older weekly quota")
     try expect(summary.todayUsedPercent == nil, "API billing mode should not estimate today percent from an older weekly quota")
-    try expect(weekly.label == "API balance", "newer API billing record should switch the weekly chip to API balance")
+    try expect(weekly.label == "Codex API", "newer API billing record should switch the weekly chip to Codex API balance")
     try expect(weekly.primary == "$7.25 left", "API billing mode should show remaining API balance")
-    try expect(TrafficLightTokenDisplay.compactWeekly(summary) == "API $7.25 left", "collapsed API billing mode should show API balance")
+    try expect(TrafficLightTokenDisplay.compactWeekly(summary) == "Codex $7.25 left", "collapsed API billing mode should show Codex API balance")
 }
 
 func tokenUsageReportsTotalRemainingCreditsForAPIUsage() throws {
@@ -1053,13 +1345,217 @@ func tokenUsageReportsTotalRemainingCreditsForAPIUsage() throws {
     try expect(summary.totalTokens == 54_000_000, "API-only logs should still sum weekly token usage")
     try expect(summary.totalRemainingPercent == nil, "API-only logs should not invent a quota percentage")
     try expect(summary.creditBalance?.remaining == 16.41, "API credit parser should keep the latest remaining balance")
-    try expect(weekly.label == "API balance", "API credit chip should identify API billing mode")
+    try expect(weekly.label == "Codex API", "API credit chip should identify Codex API billing mode")
     try expect(weekly.primary == "$16.41 left", "API credit chip should show total remaining balance")
     try expect(weekly.secondary == nil, "API credit chip should stay focused on remaining balance")
     try expect(today.primary == "53M tok", "API-only today chip should show today's token usage when no percent exists")
     try expect(today.secondary == nil, "API-only today chip should not show a missing percent beside token usage")
-    try expect(TrafficLightTokenDisplay.compactWeekly(summary) == "API $16.41 left", "collapsed API display should show total remaining balance")
+    try expect(TrafficLightTokenDisplay.compactWeekly(summary) == "Codex $16.41 left", "collapsed API display should show total remaining balance")
     try expect(TrafficLightTokenDisplay.compactToday(summary) == "Today 53M tok", "collapsed API display should show today's token usage")
+}
+
+func claudeTokenUsageSumsLocalTodayAndWeek() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+
+    let summary = ClaudeTokenUsageParser.parse(
+        lines: [
+            claudeUsageLine(
+                timestamp: "2026-06-06T15:00:00.000Z",
+                inputTokens: 1_000,
+                outputTokens: 200,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: 500
+            ),
+            claudeUsageLine(
+                timestamp: "2026-06-10T02:00:00.000Z",
+                inputTokens: 20,
+                outputTokens: 10,
+                cacheCreationInputTokens: 5,
+                cacheReadInputTokens: 15
+            ),
+            claudeUsageLine(
+                timestamp: "2026-06-11T16:30:00.000Z",
+                inputTokens: 10,
+                outputTokens: 20,
+                cacheCreationInputTokens: 30,
+                cacheReadInputTokens: 40
+            ),
+            claudeUsageLine(
+                timestamp: "2026-06-12T03:00:00.000Z",
+                inputTokens: 80,
+                outputTokens: 20,
+                cacheCreationInputTokens: 0,
+                cacheReadInputTokens: 100
+            )
+        ],
+        now: date("2026-06-12T04:00:00Z"),
+        calendar: calendar
+    )
+
+    try expect(summary.totalTokens == 195, "Claude weekly token usage should exclude cache-read hits from current local week tokens")
+    try expect(summary.todayTokens == 160, "Claude today usage should exclude cache-read hits from local-day tokens")
+    try expect(summary.totalRemainingPercent == nil, "Claude local transcripts should not invent a remaining quota percentage")
+    try expect(summary.todayUsedPercent == nil, "Claude local transcripts should not invent a today usage percentage")
+    try expect(summary.updatedAt == date("2026-06-12T03:00:00Z"), "Claude usage should expose newest usage timestamp")
+}
+
+func claudeTokenDisplayShowsUsageWithoutInventingBalance() throws {
+    let usage = TokenUsageSummary(
+        totalTokens: 195,
+        todayTokens: 100,
+        todayUsedPercent: nil,
+        primaryUsedPercent: nil,
+        primaryResetAt: nil,
+        secondaryUsedPercent: nil,
+        secondaryResetAt: nil,
+        updatedAt: date("2026-06-12T03:00:00Z")
+    )
+
+    let balance = TrafficLightTokenDisplay.claudeBalance(usage)
+    let today = TrafficLightTokenDisplay.claudeToday(usage)
+
+    try expect(balance.label == "Claude balance", "Claude balance chip should identify the source")
+    try expect(balance.primary == "--", "Claude balance chip should not invent unavailable balance")
+    try expect(balance.secondary == "Week 195 tok", "Claude balance chip should still show weekly token usage")
+    try expect(today.label == "Claude today", "Claude today chip should identify the source")
+    try expect(today.primary == "100 tok", "Claude today chip should show today's token usage")
+    try expect(TrafficLightTokenDisplay.compactClaudeToday(usage) == "Claude 100 tok", "collapsed Claude display should show today's usage")
+}
+
+func tokenDisplayShowsOnlyExistingAgentSources() throws {
+    let codexUsage = TokenUsageSummary(
+        totalTokens: 10_000,
+        todayTokens: 1_000,
+        todayUsedPercent: 10,
+        primaryUsedPercent: 25,
+        primaryResetAt: nil,
+        secondaryUsedPercent: nil,
+        secondaryResetAt: nil,
+        updatedAt: date("2026-06-12T03:00:00Z")
+    )
+    let claudeUsage = TokenUsageSummary(
+        totalTokens: 195,
+        todayTokens: 100,
+        todayUsedPercent: nil,
+        primaryUsedPercent: nil,
+        primaryResetAt: nil,
+        secondaryUsedPercent: nil,
+        secondaryResetAt: nil,
+        updatedAt: date("2026-06-12T03:00:00Z")
+    )
+
+    let both = SessionSummary(
+        status: .completed,
+        sessions: [
+            AIAgentSession.stub(id: "codex", projectName: "codex", status: .completed),
+            AIAgentSession(
+                id: "claude",
+                source: .claude,
+                projectName: "claude",
+                displayName: "claude",
+                cwd: "/Users/wuxing/claude",
+                status: .completed,
+                lastActivity: date("2026-06-12T03:00:00Z"),
+                pendingToolCalls: 0,
+                summary: "Idle"
+            )
+        ],
+        tokenUsage: codexUsage,
+        claudeTokenUsage: claudeUsage
+    )
+    let codexOnly = SessionSummary(
+        status: .completed,
+        sessions: [AIAgentSession.stub(id: "codex", projectName: "codex", status: .completed)],
+        tokenUsage: codexUsage,
+        claudeTokenUsage: claudeUsage
+    )
+    let claudeOnly = SessionSummary(
+        status: .completed,
+        sessions: [
+            AIAgentSession(
+                id: "claude",
+                source: .claude,
+                projectName: "claude",
+                displayName: "claude",
+                cwd: "/Users/wuxing/claude",
+                status: .completed,
+                lastActivity: date("2026-06-12T03:00:00Z"),
+                pendingToolCalls: 0,
+                summary: "Idle"
+            )
+        ],
+        tokenUsage: codexUsage,
+        claudeTokenUsage: claudeUsage
+    )
+
+    try expect(TrafficLightTokenDisplay.expandedPanels(for: both).map(\.label) == ["Codex"], "expanded balance display should stay Codex-only even when Claude exists")
+    try expect(TrafficLightTokenDisplay.collapsedLines(for: both) == ["Codex 75% left", "Today 10% used"], "collapsed display should stay Codex-only when both sources exist")
+    try expect(TrafficLightTokenDisplay.expandedPanels(for: codexOnly).map(\.label) == ["Codex"], "expanded display should show Codex")
+    try expect(TrafficLightTokenDisplay.collapsedLines(for: codexOnly) == ["Codex 75% left", "Today 10% used"], "collapsed Codex display should show Codex balance and today usage")
+    try expect(TrafficLightTokenDisplay.expandedPanels(for: claudeOnly).map(\.label) == ["Codex"], "expanded balance display should not add a Claude panel")
+    try expect(TrafficLightTokenDisplay.collapsedLines(for: claudeOnly) == ["Codex 75% left", "Today 10% used"], "collapsed balance display should not add Claude usage")
+}
+
+func claudeSessionStoreLoadsTokenUsageFromProjectTranscripts() throws {
+    let root = temporaryDirectory().appendingPathComponent("claude-projects")
+    let project = root.appendingPathComponent("-Users-wuxing")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    let file = project.appendingPathComponent("session.jsonl")
+    try [
+        claudeUsageLine(
+            timestamp: "2026-06-12T01:00:00.000Z",
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 80
+        )
+    ].joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+
+    let usage = ClaudeSessionStore(root: root).loadTokenUsage(
+        now: date("2026-06-12T04:00:00Z"),
+        calendar: gregorianShanghaiCalendar()
+    )
+
+    try expect(usage.totalTokens == 120, "Claude session store should load weekly token usage from project transcripts without cache-read hits")
+    try expect(usage.todayTokens == 120, "Claude session store should load today's token usage from project transcripts without cache-read hits")
+}
+
+func aiSessionStoreLoadsCodexAndClaudeTokenUsage() throws {
+    let root = temporaryDirectory()
+    let codexRoot = root.appendingPathComponent("codex")
+    let claudeRoot = root.appendingPathComponent("claude")
+    try FileManager.default.createDirectory(at: codexRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: claudeRoot, withIntermediateDirectories: true)
+    try [
+        tokenCountLine(
+            timestamp: "2026-06-12T01:00:00.000Z",
+            totalTokens: 125,
+            primaryUsedPercent: 20,
+            secondaryUsedPercent: 30,
+            secondaryResetAt: "2026-06-18T00:40:00Z"
+        )
+    ].joined(separator: "\n").write(to: codexRoot.appendingPathComponent("codex.jsonl"), atomically: true, encoding: .utf8)
+    try [
+        claudeUsageLine(
+            timestamp: "2026-06-12T01:00:00.000Z",
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 80
+        )
+    ].joined(separator: "\n").write(to: claudeRoot.appendingPathComponent("claude.jsonl"), atomically: true, encoding: .utf8)
+
+    let usage = AISessionStore(
+        codexStore: CodexSessionStore(root: codexRoot),
+        claudeStore: ClaudeSessionStore(root: claudeRoot)
+    ).loadAgentTokenUsage(
+        now: date("2026-06-12T04:00:00Z"),
+        calendar: gregorianShanghaiCalendar()
+    )
+
+    try expect(usage.codex.todayTokens == 125, "AI session store should keep Codex token usage")
+    try expect(usage.claude.todayTokens == 120, "AI session store should keep Claude token usage")
 }
 
 func productIdentityUsesMushiSignal() throws {
@@ -1413,6 +1909,84 @@ func workspaceWindowMatcherUsesTerminalHintBeforeHomeDirectory() throws {
     try expect(broadHomeMatch == nil, "home-directory sessions should not match every terminal by username")
 }
 
+func workspaceOwnerResolverFindsTerminalAncestorForClaude() throws {
+    let psOutput = """
+      PID  PPID COMMAND
+    61419     1 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+    94264 61419 login -pf wuxing
+    94266 94264 -zsh
+    94600 94266 claude code
+    """
+
+    try expect(
+        AgentWorkspaceOwnerResolver.ownerPID(
+            forProcessID: 94600,
+            appPIDs: [61419],
+            psOutput: psOutput
+        ) == 61419,
+        "Claude Code sessions should resolve their owning terminal app by process ancestry"
+    )
+}
+
+func workspaceWindowMatcherMatchesClaudeCodeTitleForHomeSession() throws {
+    let session = AIAgentSession(
+        id: "claude-live",
+        source: .claude,
+        projectName: "~",
+        displayName: "~ #2",
+        cwd: "/Users/wuxing",
+        status: .completed,
+        lastActivity: date("2026-06-09T08:20:00Z"),
+        pendingToolCalls: 0,
+        summary: "Idle",
+        windowTitleHints: ["claude-live", "claude code"]
+    )
+
+    let match = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "Terminal", title: "wuxing - Check current account token balance - claude code - 120x30")
+        ]
+    )
+
+    try expect(match?.kind == .codexTerminal, "Claude home sessions should match Terminal windows by the claude code title hint")
+}
+
+func workspaceWindowMatcherDoesNotUseClaudeCodeWindowForBareClaudeProject() throws {
+    let session = AIAgentSession(
+        id: "design-anything",
+        source: .claude,
+        projectName: "design-anything",
+        displayName: "design-anything",
+        cwd: "/Users/wuxing/PyCharmMiscProject/design-anything",
+        status: .completed,
+        lastActivity: date("2026-06-09T08:20:00Z"),
+        pendingToolCalls: 0,
+        summary: "Idle",
+        windowTitleHints: ["840a401f-e750-471f-9dad-f0b471f7f590"]
+    )
+
+    let match = AgentWorkspaceWindowMatcher.bestMatch(
+        for: session,
+        windows: [
+            AgentWorkspaceWindowSnapshot(appName: "Terminal", title: "wuxing - Check current account token balance - claude code - 120x30")
+        ]
+    )
+
+    try expect(match == nil, "bare Claude project sessions should not jump to an unrelated claude code Terminal window")
+}
+
+func terminalFocusScriptRaisesMatchedWindowAcrossSpaces() throws {
+    let lines = AgentWorkspaceTerminalFocusScript.lines(forTTY: "/dev/ttys003")
+    let script = lines.joined(separator: "\n")
+
+    try expect(script.contains("tty of t as string"), "Terminal focus script should select tab by tty")
+    try expect(script.contains("System Events"), "Terminal focus script should use AX after selecting the tab")
+    try expect(script.contains("AXRaise"), "Terminal focus script should raise the matched window for cross-space switching")
+    try expect(script.contains("activate"), "Terminal focus script should activate Terminal")
+    try expect(script.contains("is \"/dev/ttys003\""), "Terminal focus script should quote the normalized tty")
+}
+
 func workspaceWindowMatcherSupportsLocalizedTerminalAppName() throws {
     let session = AIAgentSession.stub(
         id: "s1",
@@ -1455,6 +2029,36 @@ func workspaceWindowMatcherSupportsJetBrainsAndTrae() throws {
         ]
     )
     try expect(traeMatch?.kind == .ide, "Trae windows should match by project title")
+}
+
+func tokenDisplayLabelsCodexBalanceSource() throws {
+    let subscriptionUsage = TokenUsageSummary(
+        totalTokens: 1_200_000,
+        todayTokens: 80_000,
+        todayUsedPercent: 3,
+        primaryUsedPercent: 25,
+        primaryResetAt: nil,
+        secondaryUsedPercent: nil,
+        secondaryResetAt: nil,
+        updatedAt: date("2026-06-09T08:20:00Z")
+    )
+    let apiUsage = TokenUsageSummary(
+        totalTokens: 1_200_000,
+        todayTokens: 80_000,
+        creditBalance: TokenCreditBalance(remaining: 16.41, currency: "USD"),
+        todayUsedPercent: nil,
+        primaryUsedPercent: nil,
+        primaryResetAt: nil,
+        secondaryUsedPercent: nil,
+        secondaryResetAt: nil,
+        updatedAt: date("2026-06-09T08:20:00Z")
+    )
+
+    try expect(TrafficLightTokenDisplay.weekly(subscriptionUsage).label == "Codex weekly", "subscription balance chip should identify Codex")
+    try expect(TrafficLightTokenDisplay.today(subscriptionUsage).label == "Codex today", "today usage chip should identify Codex")
+    try expect(TrafficLightTokenDisplay.weekly(apiUsage).label == "Codex API", "API balance chip should identify Codex")
+    try expect(TrafficLightTokenDisplay.compactWeekly(subscriptionUsage) == "Codex 75% left", "collapsed subscription balance should identify Codex")
+    try expect(TrafficLightTokenDisplay.compactWeekly(apiUsage) == "Codex $16.41 left", "collapsed API balance should identify Codex")
 }
 
 func expect(_ condition: Bool, _ message: String) throws {
@@ -1547,6 +2151,42 @@ func patchApplyEnd(callID: String) -> String {
     """
 }
 
+func claudeUserMessage(sessionID: String, cwd: String, text: String) -> String {
+    """
+    {"type":"user","message":{"role":"user","content":\(jsonString(text))},"uuid":"user-1","timestamp":"2026-06-09T08:20:00.000Z","cwd":"\(cwd)","sessionId":"\(sessionID)"}
+    """
+}
+
+func claudeAssistantText(sessionID: String, cwd: String, text: String) -> String {
+    """
+    {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":\(jsonString(text))}],"stop_reason":"end_turn"},"uuid":"assistant-1","timestamp":"2026-06-09T08:20:20.000Z","cwd":"\(cwd)","sessionId":"\(sessionID)"}
+    """
+}
+
+func claudeAssistantToolUse(sessionID: String, cwd: String, toolID: String, name: String) -> String {
+    """
+    {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"\(toolID)","name":"\(name)","input":{"command":"pwd"}}],"stop_reason":"tool_use"},"uuid":"assistant-tool","timestamp":"2026-06-09T08:20:10.000Z","cwd":"\(cwd)","sessionId":"\(sessionID)"}
+    """
+}
+
+func claudeToolResult(sessionID: String, cwd: String, toolID: String) -> String {
+    """
+    {"type":"user","message":{"role":"user","content":[{"tool_use_id":"\(toolID)","type":"tool_result","content":"ok","is_error":false}]},"uuid":"tool-result","timestamp":"2026-06-09T08:20:15.000Z","cwd":"\(cwd)","sessionId":"\(sessionID)"}
+    """
+}
+
+func claudeUsageLine(
+    timestamp: String,
+    inputTokens: Int,
+    outputTokens: Int,
+    cacheCreationInputTokens: Int,
+    cacheReadInputTokens: Int
+) -> String {
+    """
+    {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":\(inputTokens),"output_tokens":\(outputTokens),"cache_creation_input_tokens":\(cacheCreationInputTokens),"cache_read_input_tokens":\(cacheReadInputTokens)}},"uuid":"assistant-usage","timestamp":"\(timestamp)","cwd":"/Users/wuxing","sessionId":"claude-usage"}
+    """
+}
+
 func tokenCountLine(
     timestamp: String,
     totalTokens: Int,
@@ -1585,6 +2225,18 @@ func jsonString(_ value: String) -> String {
 func date(_ value: String) -> Date {
     ISO8601DateFormatter.withFractionalSeconds.date(from: value)
         ?? ISO8601DateFormatter.basic.date(from: value)!
+}
+
+func gregorianShanghaiCalendar() -> Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)!
+    return calendar
+}
+
+func temporaryDirectory() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("mushi-signal-tests")
+        .appendingPathComponent(UUID().uuidString)
 }
 
 extension AIAgentSession {
